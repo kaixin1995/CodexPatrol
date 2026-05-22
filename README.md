@@ -1,8 +1,40 @@
 # Codex Patrol
 
-Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://github.com/seakee/CPA-Manager) 的配套子项目，提供独立的 Codex 账号健康巡检、额度监控与自动处理能力。
+Codex Patrol 是一个面向 **Codex 账号巡检、额度管理和自动处理** 的独立管理面板。
+
+它作为 [CPA-Manager](https://github.com/seakee/CPA-Manager) 的配套子项目存在，但运行上是独立的：通过 CPA Management API 获取账号列表、探测 Codex 额度、执行启用/禁用/删除动作，并提供一套专门针对 Codex 账号维护场景的轻量后台界面。
 
 基于 .NET 10 Native AOT 构建，编译为单文件可执行程序，无外部运行时依赖，所有运行态数据保存在内存中，无需数据库。
+
+项目仓库：<https://github.com/kaixin1995/CodexPatrol>
+
+## 这个项目是做什么的
+
+如果你手里有一批通过 CPA 管理的 Codex 账号，这个项目主要解决的是下面这些问题：
+
+- 哪些账号已经失效，需要删除
+- 哪些账号周额度已经接近耗尽，需要临时禁用
+- 哪些账号之前被禁用了，但额度已经恢复，可以重新启用
+- 哪些账号当前额度异常、刷新失败或上游返回错误，需要单独排查
+- 多个站点下的 Codex 账号，如何统一查看、统一巡检、统一处理
+
+换句话说，Codex Patrol 不是通用管理面板，而是一个更偏向 **运维巡检** 的专项工具。
+
+## 适用场景
+
+- 手里维护多组 Codex 账号，需要定期清理失效号
+- 需要根据周额度使用率自动禁用高占用账号
+- 想把账号额度、异常状态、启用状态集中展示
+- 有多个 CPA 站点，希望按站点隔离管理
+- 不希望引入数据库，只想要一个可执行文件直接运行
+
+## 与其他项目的关系
+
+| 项目 | 关系 | 作用 |
+|---|---|---|
+| [CLI Proxy API (CPA)](https://github.com/router-for-me/CLIProxyAPI) | 上游依赖 | 提供 Management API，Codex Patrol 通过它读取账号、探测额度、执行账号动作 |
+| [CPA-Manager](https://github.com/seakee/CPA-Manager) | 参考来源 | 提供 Codex 巡检逻辑、额度解析思路，以及前端页面结构和视觉风格参考 |
+| Codex Patrol | 当前项目 | 专注于 Codex 账号巡检、额度管理、自动动作和运行态监控 |
 
 ## 页面预览
 
@@ -21,6 +53,15 @@ Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://git
 **操作日志**
 
 ![操作日志](./image/操作日志.png)
+
+## 核心能力
+
+- **巡检**：批量探测 Codex 账号是否失效、额度是否超限、是否可恢复
+- **自动处理**：根据策略自动执行禁用、删除、恢复启用
+- **额度管理**：集中展示周额度、5 小时额度、代码审查额度等窗口
+- **异常排查**：快速筛出错误账号，支持单账号真实刷新
+- **多站点隔离**：不同 CPA 站点分别保存配置、账号、额度和例外名单
+- **运行时可视化**：查看实时进度、最近日志、自动轮询状态、活跃账号状态
 
 ## 功能概览
 
@@ -65,7 +106,9 @@ Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://git
 - **代码审查额度**等其他限额窗口
 - 套餐类型识别（Free / Plus / Team / Pro / ProLite）
 - 兼容免费号仅有周额度的情况
+- 支持按状态筛选：显示全部、仅禁用、仅启用、仅错误
 - 支持手动刷新全部或单个账号额度
+- 单个账号的"刷新额度"按钮默认走真实请求，不复用缓存
 - 巡检完成后自动刷新额度缓存
 
 ### 5. 例外名单
@@ -116,10 +159,23 @@ Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://git
 |---|---|
 | 仪表盘 | 站点概览、账号状态总览、活跃账号监控 |
 | 巡检管理 | 手动/自动巡检控制、巡检进度、结果查看 |
-| 额度管理 | 所有账号额度详情、手动刷新、筛选排序 |
+| 额度管理 | 所有账号额度详情、状态筛选、手动刷新 |
 | 例外名单 | 添加/移除例外账号 |
 | 操作日志 | 查看最近巡检和动作操作记录 |
 | 系统设置 | CPA 连接配置、巡检参数调整、多站点管理 |
+| 登录页 | 本地密码登录入口 |
+| 首设页 | 首次设置本地访问密码 |
+
+## 使用方式概览
+
+通常的使用流程是：
+
+1. 配置 `connection.json`，接入一个或多个 CPA 站点
+2. 首次启动后访问面板，先设置本地登录密码
+3. 进入系统设置，确认站点参数、轮询策略、自动动作模式
+4. 在额度管理页面查看当前账号额度状态和异常账号
+5. 在巡检管理页面手动执行巡检，或开启后台自动轮询
+6. 结合例外名单、操作日志和状态筛选，持续维护账号池
 
 ## 技术架构
 
@@ -127,7 +183,7 @@ Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://git
 - **后端**：ASP.NET Core Minimal API
 - **前端**：嵌入式静态 HTML/CSS/JS
 - **状态存储**：进程内内存（`ConcurrentDictionary`）
-- **持久化**：`patrol-config.json`（例外名单、站点配置）、`connection.json`（连接信息）、`appsettings.json`（业务参数）
+- **持久化**：`patrol-config.json`（例外名单、站点配置）、`connection.json`（连接信息）、`appsettings.json`（业务参数）、`quota-cache.json`（额度缓存）
 - **序列化**：`System.Text.Json` + Source Generator（AOT 兼容，不依赖反射）
 
 ## 快速开始
@@ -185,16 +241,19 @@ dotnet publish src/CodexPatrol -c Release -r win-x64 -o ./publish
 
 ## 参考项目
 
-本项目在开发过程中参考了以下项目的实现：
+本项目的实现主要参考了以下项目：
 
-- **[CPA-Manager](https://github.com/seakee/CPA-Manager)** — 本项目的父项目，提供 CPA 管理面板。Codex Patrol 的巡检决策逻辑、额度解析算法、前端 UI 布局与视觉风格均参考自该项目的 TypeScript/React 实现
-  - 巡检逻辑参考：`src/features/monitoring/codexInspection.ts`
-  - 额度解析参考：`src/utils/quota/codexQuota.ts`
-  - 额度展示参考：`src/components/quota/quotaConfigs.ts`
-  - 页面布局参考：`src/pages/MonitoringCenterPage.tsx`、`src/pages/CodexInspectionPage.tsx`
+- **[CPA-Manager](https://github.com/seakee/CPA-Manager)**
+  - 参考其 Codex 巡检逻辑、额度解析方式，以及前端页面结构与视觉风格
+  - 重点参考位置包括：`src/features/monitoring/codexInspection.ts`、`src/utils/quota/codexQuota.ts`、`src/components/quota/quotaConfigs.ts`、`src/pages/MonitoringCenterPage.tsx`、`src/pages/CodexInspectionPage.tsx`
 
-- **[CLI Proxy API (CPA)](https://github.com/router-for-me/CLIProxyAPI)** — 上游代理服务。Codex Patrol 通过其 Management API 获取账号列表、探测额度、执行启用/禁用/删除操作
+- **[CLI Proxy API (CPA)](https://github.com/router-for-me/CLIProxyAPI)**
+  - 作为上游依赖提供 Management API
+  - Codex Patrol 通过它完成账号列表读取、额度探测、账号启用/禁用/删除、usage-queue 监控
 
+## 开发文档
+
+项目内部开发说明、目录索引和模块关系请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 许可证
 
