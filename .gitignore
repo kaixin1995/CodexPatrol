@@ -1,0 +1,25 @@
+## Build results
+bin/
+obj/
+publish/
+
+## IDE
+.vs/
+.vscode/
+*.user
+*.suo
+.idea/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Runtime / 敏感配置（不入库）
+connection.json
+patrol-config.json
+quota-cache.json
+
+## .NET
+*.dll
+*.pdb
+*.cache

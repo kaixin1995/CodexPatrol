@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "CodexPatrol": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:22013;http://localhost:22014"
+    }
+  }
+}

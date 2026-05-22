@@ -1,0 +1,60 @@
+using System.Text.Json.Serialization;
+using CodexPatrol.Api;
+using CodexPatrol.Models;
+
+namespace CodexPatrol.Serialization;
+
+/// <summary>
+/// AOT 兼容的 JSON 序列化上下文
+/// 所有被 JSON 序列化/反序列化的类型都必须在此注册
+/// </summary>
+[JsonSerializable(typeof(CpaConnectionInfo))]
+[JsonSerializable(typeof(PatrolSettings))]
+[JsonSerializable(typeof(PatrolSiteSettings))]
+[JsonSerializable(typeof(MultiSiteConnectionConfig))]
+[JsonSerializable(typeof(CpaConnectionSite))]
+[JsonSerializable(typeof(PatrolSiteConfig))]
+[JsonSerializable(typeof(PatrolConfig))]
+[JsonSerializable(typeof(PersistedQuotaState))]
+[JsonSerializable(typeof(PersistedQuotaSiteState))]
+[JsonSerializable(typeof(PersistedPatrolSettings))]
+[JsonSerializable(typeof(ExceptionConfig))]
+[JsonSerializable(typeof(ExceptionRequest))]
+[JsonSerializable(typeof(ExceptionListRequest))]
+[JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(MessageResponse))]
+[JsonSerializable(typeof(ExceptionsResponse))]
+[JsonSerializable(typeof(InspectionStatusResponse))]
+[JsonSerializable(typeof(SiteOptionResponse))]
+[JsonSerializable(typeof(SiteListResponse))]
+[JsonSerializable(typeof(SettingsResponse))]
+[JsonSerializable(typeof(RefreshResponse))]
+[JsonSerializable(typeof(AutoPollingResponse))]
+[JsonSerializable(typeof(SaveSettingsResponse))]
+[JsonSerializable(typeof(SaveSettingsRequest))]
+[JsonSerializable(typeof(AccountRefreshResponse))]
+[JsonSerializable(typeof(AuthStatusResponse))]
+[JsonSerializable(typeof(LoginRequest))]
+[JsonSerializable(typeof(SetupPasswordRequest))]
+[JsonSerializable(typeof(AuthFilesResponse))]
+[JsonSerializable(typeof(AuthFileItem))]
+[JsonSerializable(typeof(CodexUsagePayload))]
+[JsonSerializable(typeof(ApiCallRequest))]
+[JsonSerializable(typeof(ApiCallResponse))]
+[JsonSerializable(typeof(AuthFilePatchRequest))]
+[JsonSerializable(typeof(InspectionDecision))]
+[JsonSerializable(typeof(InspectionRunResult))]
+[JsonSerializable(typeof(CodexQuotaSnapshot))]
+[JsonSerializable(typeof(CodexQuotaWindowSnapshot))]
+[JsonSerializable(typeof(ActionOutcome))]
+[JsonSerializable(typeof(OperationLogEntry))]
+[JsonSerializable(typeof(RuntimeProgressState))]
+[JsonSerializable(typeof(List<InspectionDecision>))]
+[JsonSerializable(typeof(List<CodexQuotaSnapshot>))]
+[JsonSerializable(typeof(List<ActionOutcome>))]
+[JsonSerializable(typeof(List<OperationLogEntry>))]
+[JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(UsageMonitorStatus))]
+[JsonSerializable(typeof(List<UsageMonitorStatus>))]
+internal sealed partial class AppJsonContext : JsonSerializerContext;
