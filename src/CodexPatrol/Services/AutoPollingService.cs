@@ -157,7 +157,7 @@ public sealed class AutoPollingService : BackgroundService
     /// <summary>
     /// 执行单次自动巡检流程：加载候选、探测、决策、执行动作、记录结果。
     /// </summary>
-    private async Task RunInspectionAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct)
+    private async Task RunInspectionAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct, bool forceRefresh = false)
     {
         _store.SetPollingState(true, siteId);
         _store.SetLastRunStartedAt(DateTime.UtcNow, siteId);
@@ -194,7 +194,7 @@ public sealed class AutoPollingService : BackgroundService
                 settings.ProbeWorkers,
                 settings.ProbeBatchDelayMinMs,
                 settings.ProbeBatchDelayMaxMs,
-                forceRefresh: false,
+                forceRefresh: forceRefresh,
                 onProgress: (decision, processed, total) =>
                 {
                     _store.UpdateProgress(
@@ -325,6 +325,75 @@ public sealed class AutoPollingService : BackgroundService
             _store.SetPollingState(false, siteId);
             _store.SetLastRunFinishedAt(DateTime.UtcNow, siteId);
         }
+    }
+
+    /// <summary>
+    /// 已禁用账号的额度窗口到达重置时间后，优先触发一次强制巡检。
+    /// </summary>
+    private async Task<bool> TryHandleReachedQuotaResetAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var nextResetCheckAt = _store.GetAccounts(siteId)
+            .Where(account => account.Disabled)
+            .Select(account => ResolveResetCheckAt(_store.GetQuota(account.Name, siteId), settings.UsedPercentThreshold))
+            .Where(resetCheckAt => resetCheckAt.HasValue)
+            .Select(resetCheckAt => resetCheckAt!.Value)
+            .OrderBy(resetCheckAt => resetCheckAt)
+            .FirstOrDefault();
+
+        if (nextResetCheckAt == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        var scheduledAt = _store.GetNextScheduledAt(siteId);
+        if (scheduledAt == DateTime.MinValue || nextResetCheckAt < scheduledAt)
+        {
+            _store.SetNextScheduledAt(nextResetCheckAt, siteId);
+        }
+
+        if (nowUtc < nextResetCheckAt)
+        {
+            return false;
+        }
+
+        _store.AddOperationLog("inspection", "inspection", "auto", "检测到已禁用账号达到额度重置时间，开始强制自动巡检", siteId: siteId);
+        await RunInspectionAsync(siteId, settings, ct, forceRefresh: true);
+        if (_store.HasSite(siteId))
+        {
+            _store.SetNextScheduledAt(BuildNextRunAt(settings), siteId);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 计算已达到阈值的额度窗口对应的重检时间。
+    /// </summary>
+    private static DateTime? ResolveResetCheckAt(CodexQuotaSnapshot? quota, int threshold)
+    {
+        if (quota is null || !quota.Success)
+        {
+            return null;
+        }
+
+        var resetCheckTimes = quota.Windows
+            .Where(window => window.ResetAtUtc != DateTime.MinValue)
+            .Where(IsTrackedResetWindow)
+            .Where(window => window.UsedPercent.HasValue && window.UsedPercent.Value >= threshold)
+            .Select(window => window.ResetAtUtc + ResetCheckDelay)
+            .OrderBy(resetCheckAt => resetCheckAt)
+            .ToList();
+
+        return resetCheckTimes.Count == 0 ? null : resetCheckTimes[0];
+    }
+
+    /// <summary>
+    /// 仅跟踪 5 小时和周额度窗口的重置时间。
+    /// </summary>
+    private static bool IsTrackedResetWindow(CodexQuotaWindowSnapshot window)
+    {
+        return window.LimitWindowSeconds == FiveHourSeconds || window.LimitWindowSeconds == WeekSeconds;
     }
 
     /// <summary>

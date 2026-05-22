@@ -267,30 +267,30 @@ static void EnsureAppSettingsExists()
 
     try
     {
-        var defaults = new
-        {
-            PatrolSettings = new
-            {
-                AutoPollingEnabled = false,
-                ListenHost = "0.0.0.0",
-                ListenPort = 22014,
-                PollIntervalMinutes = 10,
-                PollRandomDelayMinMinutes = 1,
-                PollRandomDelayMaxMinutes = 3,
-                ProbeWorkers = 3,
-                ProbeBatchDelayMinMs = 2000,
-                ProbeBatchDelayMaxMs = 3000,
-                ActionWorkers = 4,
-                TimeoutMs = 15000,
-                RetryCount = 0,
-                AutoActionMode = "disable",
-                AutoEnableRecovered = false,
-                UsedPercentThreshold = 95,
-                Provider = "codex",
-            }
-        };
-        var json = JsonSerializer.Serialize(defaults, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(path, json);
+        // 默认配置是静态内容，直接写入字符串以避免 AOT/trim 序列化告警。
+        const string defaults = """
+{
+  "PatrolSettings": {
+    "AutoPollingEnabled": false,
+    "ListenHost": "0.0.0.0",
+    "ListenPort": 22014,
+    "PollIntervalMinutes": 10,
+    "PollRandomDelayMinMinutes": 1,
+    "PollRandomDelayMaxMinutes": 3,
+    "ProbeWorkers": 3,
+    "ProbeBatchDelayMinMs": 2000,
+    "ProbeBatchDelayMaxMs": 3000,
+    "ActionWorkers": 4,
+    "TimeoutMs": 15000,
+    "RetryCount": 0,
+    "AutoActionMode": "disable",
+    "AutoEnableRecovered": false,
+    "UsedPercentThreshold": 95,
+    "Provider": "codex"
+  }
+}
+""";
+        File.WriteAllText(path, defaults);
     }
     catch
     {
