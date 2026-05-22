@@ -20,7 +20,7 @@ let cachedExceptions = new Set();
 let cachedQuotas = [];
 let currentQuotaPage = 1;
 const quotaPageSize = 10;
-let currentFilter = 'all';
+let currentFilter = 'enabled';
 
 function renderPage() {
   renderLayout('quotas', '额度管理', `
@@ -33,9 +33,9 @@ function renderPage() {
       </div>
     </div>
     <div class="settings-tabs" id="quota-filter-tabs">
-      <button class="settings-tab active" data-filter="all">显示全部</button>
+      <button class="settings-tab" data-filter="all">显示全部</button>
       <button class="settings-tab" data-filter="disabled">仅禁用</button>
-      <button class="settings-tab" data-filter="enabled">仅启用</button>
+      <button class="settings-tab active" data-filter="enabled">仅启用</button>
       <button class="settings-tab" data-filter="error">仅错误</button>
     </div>
     <div class="card">
