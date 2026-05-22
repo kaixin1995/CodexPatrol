@@ -178,64 +178,88 @@ public sealed class InspectionEngine
     }
 
     /// <summary>
-    /// 探测单个账号并返回决策。
+    /// 尝试在发起真实请求前直接给出探测结果；命中缓存或无需请求时立即返回 true。
     /// </summary>
-    public async Task<InspectionDecision> InspectAccountAsync(
-        string? siteId,
+    private bool TryResolveImmediateDecision(
+        string resolvedSiteId,
+        PatrolSiteSettings settings,
         AuthFileItem file,
-        IReadOnlyDictionary<string, DateTime>? lastUsageByAuthIndex = null,
-        bool forceRefresh = false,
-        CancellationToken ct = default)
+        IReadOnlyDictionary<string, DateTime>? lastUsageByAuthIndex,
+        bool forceRefresh,
+        out InspectionDecision? decision)
     {
-        var resolvedSiteId = _store.ResolveSiteId(siteId);
-        var settings = _store.GetSettings(resolvedSiteId);
-        var authIndex = file.Auth_Index ?? file.AuthIndex ?? "";
-        var accountId = ResolveAccountId(file);
+        var nowUtc = DateTime.UtcNow;
+        var authIndex = (file.Auth_Index ?? file.AuthIndex ?? "").Trim();
         var displayAccount = ResolveDisplayAccount(file);
 
         // 缺少 auth_index 无法请求上游，直接保留。
         if (string.IsNullOrWhiteSpace(authIndex))
         {
-            return new InspectionDecision
+            decision = new InspectionDecision
             {
                 AccountName = file.Name,
                 DisplayAccount = displayAccount,
                 Action = InspectionAction.Keep,
                 Reason = "缺少 auth_index，保留账号",
-                CheckedAt = DateTime.UtcNow,
+                CheckedAt = nowUtc,
                 Disabled = file.Disabled,
                 Error = "缺少 auth_index",
             };
+            return true;
         }
 
-        try
+        if (forceRefresh)
         {
-            var nowUtc = DateTime.UtcNow;
-            var existingQuota = _store.GetQuota(file.Name, resolvedSiteId);
+            decision = null;
+            return false;
+        }
 
-            // 判断 usage-queue 监控是否活跃，以及该账号是否有调用活动。
-            var monitorActive = _store.IsUsageMonitorActive(resolvedSiteId);
-            var hasUsage = monitorActive && _store.HasAccountUsage(resolvedSiteId, authIndex.Trim());
+        var existingQuota = _store.GetQuota(file.Name, resolvedSiteId);
 
-            // 已禁用的免费账号，如果周额度未重置则跳过本轮检查。
-            if (!forceRefresh && QuotaCachePolicy.TrySkipDisabledFreeQuota(
+        // 已禁用的免费账号，如果周额度未重置则跳过本轮检查。
+        if (QuotaCachePolicy.TrySkipDisabledFreeQuota(
+            existingQuota,
+            displayAccount,
+            file.Disabled,
+            settings.UsedPercentThreshold,
+            nowUtc,
+            out var skippedQuota,
+            out var _))
+        {
+            _store.SetQuota(file.Name, skippedQuota!, resolvedSiteId);
+            var skippedDecision = ResolveDecision(file, skippedQuota!.StatusCode, skippedQuota, settings.UsedPercentThreshold);
+            skippedDecision.Reason = "免费账号已禁用，且周额度未重置，跳过本轮检查";
+            skippedDecision.CheckedAt = nowUtc;
+            decision = skippedDecision;
+            return true;
+        }
+
+        if (lastUsageByAuthIndex is not null)
+        {
+            lastUsageByAuthIndex.TryGetValue(authIndex, out var lastUsageAtUtc);
+            DateTime? normalizedLastUsageAt = lastUsageAtUtc == default ? null : lastUsageAtUtc;
+            if (QuotaCachePolicy.TryReuseQuota(
                 existingQuota,
                 displayAccount,
                 file.Disabled,
-                settings.UsedPercentThreshold,
                 nowUtc,
-                out var skippedQuota,
+                normalizedLastUsageAt,
+                out var cachedQuota,
                 out var _))
             {
-                _store.SetQuota(file.Name, skippedQuota!, resolvedSiteId);
-                var skippedDecision = ResolveDecision(file, skippedQuota!.StatusCode, skippedQuota, settings.UsedPercentThreshold);
-                skippedDecision.Reason = "免费账号已禁用，且周额度未重置，跳过本轮检查";
-                skippedDecision.CheckedAt = nowUtc;
-                return skippedDecision;
+                _store.SetQuota(file.Name, cachedQuota!, resolvedSiteId);
+                var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold);
+                cachedDecision.CheckedAt = nowUtc;
+                decision = cachedDecision;
+                return true;
             }
-
+        }
+        else
+        {
             // 监控活跃且无调用活动时，尝试复用缓存。
-            if (!forceRefresh && !hasUsage && monitorActive && QuotaCachePolicy.TryReuseQuota(
+            var monitorActive = _store.IsUsageMonitorActive(resolvedSiteId);
+            var hasUsage = monitorActive && _store.HasAccountUsage(resolvedSiteId, authIndex);
+            if (!hasUsage && monitorActive && QuotaCachePolicy.TryReuseQuota(
                 existingQuota,
                 displayAccount,
                 file.Disabled,
@@ -247,32 +271,76 @@ public sealed class InspectionEngine
                 _store.SetQuota(file.Name, cachedQuota!, resolvedSiteId);
                 var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold);
                 cachedDecision.CheckedAt = nowUtc;
-                return cachedDecision;
+                decision = cachedDecision;
+                return true;
+            }
+        }
+
+        decision = null;
+        return false;
+    }
+
+    /// <summary>
+    /// 对单个账号发起真实额度请求，统一受全局探测并发限制控制。
+    /// </summary>
+    private async Task<InspectionDecision> InspectAccountWithRealRequestAsync(
+        string resolvedSiteId,
+        PatrolSiteSettings settings,
+        AuthFileItem file,
+        string authIndex,
+        string displayAccount,
+        CancellationToken ct)
+    {
+        var accountId = ResolveAccountId(file);
+
+        // 真实探测请求统一走全局并发限制，自动与手动线路合并计数，超出后在这里排队等待。
+        using var _ = await AcquireGlobalProbeSlotAsync(ct);
+        var (statusCode, body) = await _cpa.RequestCodexUsageAsync(settings, authIndex, accountId, ct);
+
+        // 解析额度并更新缓存。
+        var quota = CodexQuotaParser.ParseQuotaSnapshot(
+            file.Name,
+            displayAccount,
+            file.Disabled,
+            statusCode,
+            body);
+        quota.FromCache = false;
+        quota.CacheReason = "";
+        quota.LastUsageAt = DateTime.MinValue;
+        _store.SetQuota(file.Name, quota, resolvedSiteId);
+
+        // 清除该账号的调用活动标记。
+        _store.ClearAccountUsage(resolvedSiteId, authIndex);
+
+        // 决策。
+        var decision = ResolveDecision(file, statusCode, quota, settings.UsedPercentThreshold);
+        decision.CheckedAt = DateTime.UtcNow;
+        return decision;
+    }
+
+    /// <summary>
+    /// 探测单个账号并返回决策。
+    /// </summary>
+    public async Task<InspectionDecision> InspectAccountAsync(
+        string? siteId,
+        AuthFileItem file,
+        IReadOnlyDictionary<string, DateTime>? lastUsageByAuthIndex = null,
+        bool forceRefresh = false,
+        CancellationToken ct = default)
+    {
+        var resolvedSiteId = _store.ResolveSiteId(siteId);
+        var settings = _store.GetSettings(resolvedSiteId);
+        var authIndex = (file.Auth_Index ?? file.AuthIndex ?? "").Trim();
+        var displayAccount = ResolveDisplayAccount(file);
+
+        try
+        {
+            if (TryResolveImmediateDecision(resolvedSiteId, settings, file, lastUsageByAuthIndex, forceRefresh, out var decision))
+            {
+                return decision!;
             }
 
-            // 真实探测请求统一走全局并发限制，自动与手动线路合并计数，超出后在这里排队等待。
-            using var _ = await AcquireGlobalProbeSlotAsync(ct);
-            var (statusCode, body) = await _cpa.RequestCodexUsageAsync(settings, authIndex, accountId, ct);
-
-            // 解析额度并更新缓存。
-            var quota = CodexQuotaParser.ParseQuotaSnapshot(
-                file.Name,
-                displayAccount,
-                file.Disabled,
-                statusCode,
-                body);
-            quota.FromCache = false;
-            quota.CacheReason = "";
-            quota.LastUsageAt = DateTime.MinValue;
-            _store.SetQuota(file.Name, quota, resolvedSiteId);
-
-            // 清除该账号的调用活动标记。
-            _store.ClearAccountUsage(resolvedSiteId, authIndex.Trim());
-
-            // 决策。
-            var decision = ResolveDecision(file, statusCode, quota, settings.UsedPercentThreshold);
-            decision.CheckedAt = DateTime.UtcNow;
-            return decision;
+            return await InspectAccountWithRealRequestAsync(resolvedSiteId, settings, file, authIndex, displayAccount, ct);
         }
         catch (Exception ex)
         {
@@ -293,7 +361,7 @@ public sealed class InspectionEngine
     }
 
     /// <summary>
-    /// 并发探测多个账号。
+    /// 并发探测多个账号：先快速处理所有可直接命中的缓存项，再按并发和批次延迟处理真实请求项。
     /// </summary>
     public async Task<List<InspectionDecision>> InspectAccountsAsync(
         string? siteId,
@@ -307,6 +375,7 @@ public sealed class InspectionEngine
         CancellationToken ct = default)
     {
         var resolvedSiteId = _store.ResolveSiteId(siteId);
+        var settings = _store.GetSettings(resolvedSiteId);
         var results = new List<InspectionDecision>();
         var total = files.Count;
         if (total == 0)
@@ -317,20 +386,46 @@ public sealed class InspectionEngine
         var concurrency = Math.Max(1, maxConcurrency);
         var normalizedDelayMin = Math.Max(0, batchDelayMinMs);
         var normalizedDelayMax = Math.Max(normalizedDelayMin, batchDelayMaxMs);
-        var totalBatches = (int)Math.Ceiling(total / (double)concurrency);
         var processed = 0;
+        var immediateDecisions = new List<InspectionDecision>();
+        var realRequestFiles = new List<AuthFileItem>();
 
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (TryResolveImmediateDecision(resolvedSiteId, settings, file, null, forceRefresh, out var immediateDecision))
+            {
+                immediateDecisions.Add(immediateDecision!);
+            }
+            else
+            {
+                realRequestFiles.Add(file);
+            }
+        }
+
+        foreach (var decision in immediateDecisions.OrderBy(item => item.AccountName, StringComparer.OrdinalIgnoreCase))
+        {
+            results.Add(decision);
+            processed++;
+            if (onProgress is not null)
+            {
+                await onProgress(decision, processed, total);
+            }
+        }
+
+        var totalBatches = (int)Math.Ceiling(realRequestFiles.Count / (double)concurrency);
         for (var batchIndex = 0; batchIndex < totalBatches; batchIndex++)
         {
             ct.ThrowIfCancellationRequested();
 
-            var batch = files
+            var batch = realRequestFiles
                 .Skip(batchIndex * concurrency)
                 .Take(concurrency)
                 .ToList();
 
-            var batchResults = await Task.WhenAll(batch.Select(file => InspectAccountAsync(resolvedSiteId, file, null, forceRefresh, ct)));
-            foreach (var decision in batchResults.OrderBy(item => item.AccountName))
+            var batchResults = await Task.WhenAll(batch.Select(file => InspectAccountAsync(resolvedSiteId, file, null, forceRefresh: true, ct)));
+            foreach (var decision in batchResults.OrderBy(item => item.AccountName, StringComparer.OrdinalIgnoreCase))
             {
                 results.Add(decision);
                 processed++;
@@ -358,7 +453,7 @@ public sealed class InspectionEngine
             await Task.Delay(delay, ct);
         }
 
-        return results.OrderBy(decision => decision.AccountName).ToList();
+        return results.OrderBy(decision => decision.AccountName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>
