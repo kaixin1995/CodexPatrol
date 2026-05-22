@@ -20,6 +20,7 @@ let cachedExceptions = new Set();
 let cachedQuotas = [];
 let currentQuotaPage = 1;
 const quotaPageSize = 10;
+let currentFilter = 'all';
 
 function renderPage() {
   renderLayout('quotas', '额度管理', `
@@ -30,6 +31,12 @@ function renderPage() {
         <button class="btn" id="btn-refresh-all-force">真实请求</button>
         <button class="btn" id="btn-refresh-page">刷新本页</button>
       </div>
+    </div>
+    <div class="settings-tabs" id="quota-filter-tabs">
+      <button class="settings-tab active" data-filter="all">显示全部</button>
+      <button class="settings-tab" data-filter="disabled">仅禁用</button>
+      <button class="settings-tab" data-filter="enabled">仅启用</button>
+      <button class="settings-tab" data-filter="error">仅错误</button>
     </div>
     <div class="card">
       <h3>实时进度</h3>
@@ -43,7 +50,6 @@ function renderPage() {
     <div id="quota-empty" class="empty-state" style="display:none">
       <p>暂无额度数据，请先刷新额度或执行巡检</p>
     </div>
-    <div class="quota-pagination" id="quota-pagination-bottom" style="display:none"></div>
     <div class="card">
       <h3>运行输出</h3>
       <div id="quota-logs" class="log-scroll"></div>
@@ -132,8 +138,24 @@ function renderAccountCard(account, quota) {
 }
 
 // 额度分页只影响展示，不改变后端全量刷新逻辑。
+function getFilteredAccounts() {
+  if (currentFilter === 'all') return cachedAccounts;
+  const quotaMap = Object.fromEntries((cachedQuotas || []).map(q => [q.accountName, q]));
+  return cachedAccounts.filter(account => {
+    const accountName = getAccountName(account);
+    const quota = quotaMap[accountName];
+    const disabled = quota?.disabled ?? getAccountDisabled(account);
+    switch (currentFilter) {
+      case 'disabled': return disabled;
+      case 'enabled': return !disabled;
+      case 'error': return quota && !quota.success;
+      default: return true;
+    }
+  });
+}
+
 function getQuotaTotalPages() {
-  return Math.max(1, Math.ceil(cachedAccounts.length / quotaPageSize));
+  return Math.max(1, Math.ceil(getFilteredAccounts().length / quotaPageSize));
 }
 
 function normalizeQuotaPage() {
@@ -142,8 +164,9 @@ function normalizeQuotaPage() {
 
 function getVisibleQuotaAccounts() {
   normalizeQuotaPage();
+  const filtered = getFilteredAccounts();
   const startIndex = (currentQuotaPage - 1) * quotaPageSize;
-  return cachedAccounts.slice(startIndex, startIndex + quotaPageSize);
+  return filtered.slice(startIndex, startIndex + quotaPageSize);
 }
 
 function buildQuotaPageItems(totalPages) {
@@ -203,28 +226,27 @@ function renderQuotaPagination() {
   const toolbar = document.getElementById('quota-list-toolbar');
   const summary = document.getElementById('quota-page-summary');
   const topPagination = document.getElementById('quota-pagination-top');
-  const bottomPagination = document.getElementById('quota-pagination-bottom');
   const refreshPageButton = document.getElementById('btn-refresh-page');
 
+  const filtered = getFilteredAccounts();
   if (cachedAccounts.length === 0) {
     toolbar.style.display = 'none';
     topPagination.style.display = 'none';
-    bottomPagination.style.display = 'none';
     refreshPageButton.disabled = true;
     return;
   }
 
   normalizeQuotaPage();
   const totalPages = getQuotaTotalPages();
-  const startIndex = (currentQuotaPage - 1) * quotaPageSize + 1;
-  const endIndex = Math.min(currentQuotaPage * quotaPageSize, cachedAccounts.length);
+  const totalCount = filtered.length;
+  const startIndex = totalCount === 0 ? 0 : (currentQuotaPage - 1) * quotaPageSize + 1;
+  const endIndex = Math.min(currentQuotaPage * quotaPageSize, totalCount);
 
-  summary.textContent = `共 ${cachedAccounts.length} 个账号，每页 ${quotaPageSize} 个，当前显示第 ${startIndex}-${endIndex} 个，第 ${currentQuotaPage}/${totalPages} 页`;
+  const filterLabel = currentFilter === 'all' ? '' : `，筛选: ${document.querySelector(`[data-filter="${currentFilter}"]`)?.textContent || currentFilter}`;
+  summary.textContent = `共 ${cachedAccounts.length} 个账号${filterLabel}，当前 ${totalCount} 个，每页 ${quotaPageSize} 个，显示第 ${startIndex}-${endIndex} 个，第 ${currentQuotaPage}/${totalPages} 页`;
   toolbar.style.display = 'flex';
   topPagination.style.display = 'block';
-  bottomPagination.style.display = 'block';
   topPagination.innerHTML = buildQuotaPaginationHtml();
-  bottomPagination.innerHTML = buildQuotaPaginationHtml();
   refreshPageButton.disabled = false;
 }
 
@@ -251,6 +273,15 @@ function renderQuotaGrid() {
     grid.innerHTML = '';
     empty.style.display = 'block';
     empty.querySelector('p').textContent = '暂无账号数据，请检查 CPA 连接配置';
+    renderQuotaPagination();
+    return;
+  }
+
+  const filtered = getFilteredAccounts();
+  if (filtered.length === 0) {
+    grid.innerHTML = '';
+    empty.style.display = 'block';
+    empty.querySelector('p').textContent = '当前筛选条件下没有匹配的账号';
     renderQuotaPagination();
     return;
   }
@@ -471,10 +502,17 @@ function bindEvents() {
   document.getElementById('btn-refresh-all').addEventListener('click', () => refreshAllQuotas(false));
   document.getElementById('btn-refresh-all-force').addEventListener('click', () => refreshAllQuotas(true));
   document.getElementById('btn-refresh-page').addEventListener('click', refreshCurrentPageQuotas);
+  document.getElementById('quota-filter-tabs').addEventListener('click', event => {
+    const tab = event.target.closest('[data-filter]');
+    if (!tab) return;
+    document.querySelectorAll('#quota-filter-tabs .settings-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentFilter = tab.dataset.filter;
+    currentQuotaPage = 1;
+    renderQuotaGrid();
+  });
   document.getElementById('quota-pagination-top').addEventListener('click', handleQuotaPaginationClick);
-  document.getElementById('quota-pagination-bottom').addEventListener('click', handleQuotaPaginationClick);
   document.getElementById('quota-pagination-top').addEventListener('keydown', handleQuotaPaginationKeydown);
-  document.getElementById('quota-pagination-bottom').addEventListener('keydown', handleQuotaPaginationKeydown);
   document.getElementById('quota-grid').addEventListener('click', event => {
     const refreshBtn = event.target.closest('[data-action="refresh-single"]');
     if (refreshBtn) {
