@@ -555,7 +555,7 @@ function bindEvents() {
   document.getElementById('quota-grid').addEventListener('click', event => {
     const refreshBtn = event.target.closest('[data-action="refresh-single"]');
     if (refreshBtn) {
-      refreshSingleQuota(refreshBtn.dataset.accountName || '');
+      refreshSingleQuota(refreshBtn.dataset.accountName || '', true);
       return;
     }
 
