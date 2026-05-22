@@ -415,6 +415,9 @@ public sealed class RuntimeStore
         var state = GetState(siteId);
         lock (_configLock)
         {
+            PreserveQuotaRuntimeState(
+                state.Quotas.TryGetValue(accountName, out var existingQuota) ? existingQuota : null,
+                snapshot);
             state.Quotas[accountName] = snapshot;
             SaveQuotaState();
         }
@@ -425,6 +428,7 @@ public sealed class RuntimeStore
     /// </summary>
     public List<CodexQuotaSnapshot> GetQuotas(string? siteId = null) => GetState(siteId).Quotas.Values
         .Where(HasVisibleQuota)
+        .Select(CloneQuotaForOutput)
         .ToList();
 
     /// <summary>
@@ -1256,6 +1260,59 @@ public sealed class RuntimeStore
             || quota.RefreshedAt != DateTime.MinValue
             || quota.Windows.Count > 0
             || !string.IsNullOrWhiteSpace(quota.ErrorMessage);
+    }
+
+    /// <summary>
+    /// 在同一重置点刷新额度时，保留窗口的运行时处理标记，避免重复触发补检。
+    /// </summary>
+    private static void PreserveQuotaRuntimeState(CodexQuotaSnapshot? existingQuota, CodexQuotaSnapshot nextQuota)
+    {
+        if (existingQuota is null || existingQuota.Windows.Count == 0 || nextQuota.Windows.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var nextWindow in nextQuota.Windows)
+        {
+            var existingWindow = existingQuota.Windows.FirstOrDefault(window =>
+                string.Equals(window.Id, nextWindow.Id, StringComparison.OrdinalIgnoreCase)
+                && window.ResetAtUtc == nextWindow.ResetAtUtc
+                && window.LimitWindowSeconds == nextWindow.LimitWindowSeconds);
+            if (existingWindow is not null)
+            {
+                nextWindow.LastResetHandledAt = existingWindow.LastResetHandledAt;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 克隆额度快照用于接口输出，并实时重算重置时间标签。
+    /// </summary>
+    private static CodexQuotaSnapshot CloneQuotaForOutput(CodexQuotaSnapshot quota)
+    {
+        return new CodexQuotaSnapshot
+        {
+            AccountName = quota.AccountName,
+            DisplayAccount = quota.DisplayAccount,
+            PlanType = quota.PlanType,
+            Disabled = quota.Disabled,
+            RefreshedAt = quota.RefreshedAt,
+            StatusCode = quota.StatusCode,
+            Success = quota.Success,
+            ErrorMessage = quota.ErrorMessage,
+            FromCache = quota.FromCache,
+            CacheReason = quota.CacheReason,
+            LastUsageAt = quota.LastUsageAt,
+            Windows = quota.Windows.Select(window => new CodexQuotaWindowSnapshot
+            {
+                Id = window.Id,
+                Label = window.Label,
+                UsedPercent = window.UsedPercent,
+                ResetLabel = CodexQuotaParser.FormatResetLabel(window.ResetAtUtc),
+                LimitWindowSeconds = window.LimitWindowSeconds,
+                ResetAtUtc = window.ResetAtUtc,
+            }).ToList(),
+        };
     }
 
     /// <summary>

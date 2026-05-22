@@ -81,16 +81,25 @@ public static class CodexQuotaParser
     private static string BuildResetLabel(CodexUsageWindow? window)
     {
         if (window is null) return "-";
+        return FormatResetLabel(ResolveResetAtUtc(window));
+    }
 
-        var resetAtUtc = ResolveResetAtUtc(window);
+    /// <summary>
+    /// 根据绝对重置时间生成可读标签，供运行时输出和前端展示复用。
+    /// </summary>
+    public static string FormatResetLabel(DateTime resetAtUtc, DateTime? nowUtc = null)
+    {
         if (resetAtUtc == DateTime.MinValue)
         {
             return "-";
         }
 
-        var remaining = resetAtUtc - DateTime.UtcNow;
+        var remaining = resetAtUtc - (nowUtc ?? DateTime.UtcNow);
         if (remaining.TotalSeconds > 0)
+        {
             return FormatDuration(remaining.TotalSeconds);
+        }
+
         return "已重置";
     }
 

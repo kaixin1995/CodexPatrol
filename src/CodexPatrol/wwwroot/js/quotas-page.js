@@ -57,11 +57,49 @@ function renderPage() {
   `);
 }
 
+function formatResetCountdown(resetAtUtc, fallbackLabel = '-') {
+  if (!resetAtUtc) {
+    return fallbackLabel;
+  }
+
+  const timestamp = Date.parse(resetAtUtc);
+  if (Number.isNaN(timestamp)) {
+    return fallbackLabel;
+  }
+
+  const remainingMs = timestamp - Date.now();
+  if (remainingMs <= 0) {
+    return '已重置';
+  }
+
+  const totalMinutes = Math.floor(remainingMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+
+  if (days > 0) parts.push(`${days}天`);
+  if (hours > 0) parts.push(`${hours}小时`);
+  if (minutes > 0) parts.push(`${minutes}分`);
+
+  return parts.length > 0 ? `${parts.join('')}后重置` : '<1分钟后重置';
+}
+
+function updateQuotaResetCountdowns() {
+  document.querySelectorAll('.quota-reset[data-reset-at-utc]').forEach(element => {
+    const resetLabel = formatResetCountdown(element.dataset.resetAtUtc || '', element.dataset.fallbackLabel || '-');
+    element.textContent = resetLabel;
+    element.title = resetLabel;
+  });
+}
+
 function renderQuotaWindow(window) {
   const percent = window.usedPercent ?? 0;
   const tone = percent >= 100 ? 'bad' : percent >= 80 ? 'warn' : 'good';
   const label = window.label || '-';
-  const resetLabel = window.resetLabel || '-';
+  const fallbackResetLabel = window.resetLabel || '-';
+  const resetAtUtc = window.resetAtUtc || '';
+  const resetLabel = formatResetCountdown(resetAtUtc, fallbackResetLabel);
 
   return `
     <div class="quota-window">
@@ -70,7 +108,7 @@ function renderQuotaWindow(window) {
         <div class="quota-window-fill ${tone}" style="width:${Math.min(percent, 100)}%"></div>
       </div>
       <div class="quota-percent">${window.usedPercent != null ? window.usedPercent.toFixed(1) + '%' : '--'}</div>
-      <div class="quota-reset" title="${escapeHtml(resetLabel)}">${escapeHtml(resetLabel)}</div>
+      <div class="quota-reset" data-reset-at-utc="${escapeHtml(resetAtUtc)}" data-fallback-label="${escapeHtml(fallbackResetLabel)}" title="${escapeHtml(resetLabel)}">${escapeHtml(resetLabel)}</div>
     </div>
   `;
 }
@@ -288,6 +326,7 @@ function renderQuotaGrid() {
 
   empty.style.display = 'none';
   grid.innerHTML = getVisibleQuotaAccounts().map(account => renderAccountCard(account, quotaMap[getAccountName(account)])).join('');
+  updateQuotaResetCountdowns();
   renderQuotaPagination();
 }
 
@@ -589,6 +628,9 @@ async function init() {
     loadQuotasPage({ refreshAccountList: true }),
     loadRuntimePanels(),
   ]);
+  setInterval(() => {
+    updateQuotaResetCountdowns();
+  }, 1000);
   setInterval(() => {
     loadQuotasPage();
     loadRuntimePanels();

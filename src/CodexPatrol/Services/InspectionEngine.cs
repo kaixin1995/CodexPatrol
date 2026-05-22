@@ -19,12 +19,120 @@ public sealed class InspectionEngine
     private readonly RuntimeStore _store;
 
     /// <summary>
+    /// 全局探测并发计数。
+    /// </summary>
+    private int _globalProbeRunningCount;
+
+    /// <summary>
+    /// 全局探测等待队列，自动与手动线路统一在这里排队。
+    /// </summary>
+    private readonly LinkedList<TaskCompletionSource<bool>> _globalProbeWaiters = [];
+
+    /// <summary>
+    /// 全局探测并发锁。
+    /// </summary>
+    private readonly object _globalProbeLock = new();
+
+    /// <summary>
     /// 构造 InspectionEngine。
     /// </summary>
     public InspectionEngine(CpaClient cpa, RuntimeStore store)
     {
         _cpa = cpa;
         _store = store;
+    }
+
+    /// <summary>
+    /// 获取当前系统设置中的执行并发数，作为自动与手动线路共享的全局探测上限。
+    /// </summary>
+    private int ResolveGlobalProbeLimit()
+    {
+        return Math.Max(1, _store.GetSettings().ActionWorkers);
+    }
+
+    /// <summary>
+    /// 申请一个全局探测槽位，超过执行并发数时进入等待队列。
+    /// </summary>
+    private async Task<IDisposable> AcquireGlobalProbeSlotAsync(CancellationToken ct)
+    {
+        LinkedListNode<TaskCompletionSource<bool>>? waiterNode = null;
+
+        lock (_globalProbeLock)
+        {
+            if (_globalProbeRunningCount < ResolveGlobalProbeLimit())
+            {
+                _globalProbeRunningCount++;
+                return new GlobalProbeLease(this);
+            }
+
+            waiterNode = _globalProbeWaiters.AddLast(new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+        }
+
+        using var registration = ct.Register(static state =>
+        {
+            ((TaskCompletionSource<bool>)state!).TrySetCanceled();
+        }, waiterNode.Value);
+
+        try
+        {
+            await waiterNode.Value.Task;
+            return new GlobalProbeLease(this);
+        }
+        catch
+        {
+            lock (_globalProbeLock)
+            {
+                if (waiterNode.List is not null)
+                {
+                    _globalProbeWaiters.Remove(waiterNode);
+                }
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 释放一个全局探测槽位，并按队列顺序唤醒等待中的任务。
+    /// </summary>
+    private void ReleaseGlobalProbeSlot()
+    {
+        lock (_globalProbeLock)
+        {
+            if (_globalProbeRunningCount > 0)
+            {
+                _globalProbeRunningCount--;
+            }
+
+            while (_globalProbeRunningCount < ResolveGlobalProbeLimit() && _globalProbeWaiters.Count > 0)
+            {
+                var waiter = _globalProbeWaiters.First!.Value;
+                _globalProbeWaiters.RemoveFirst();
+                if (waiter.TrySetResult(true))
+                {
+                    _globalProbeRunningCount++;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 全局探测槽位释放器，确保每次成功申请后都能正确归还配额。
+    /// </summary>
+    private sealed class GlobalProbeLease : IDisposable
+    {
+        private InspectionEngine? _owner;
+
+        public GlobalProbeLease(InspectionEngine owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            owner?.ReleaseGlobalProbeSlot();
+        }
     }
 
     /// <summary>
@@ -142,6 +250,8 @@ public sealed class InspectionEngine
                 return cachedDecision;
             }
 
+            // 真实探测请求统一走全局并发限制，自动与手动线路合并计数，超出后在这里排队等待。
+            using var _ = await AcquireGlobalProbeSlotAsync(ct);
             var (statusCode, body) = await _cpa.RequestCodexUsageAsync(settings, authIndex, accountId, ct);
 
             // 解析额度并更新缓存。

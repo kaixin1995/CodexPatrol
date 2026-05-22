@@ -38,6 +38,11 @@ public sealed class AutoPollingService : BackgroundService
     private static readonly TimeSpan ResetCheckDelay = TimeSpan.FromMinutes(1);
 
     /// <summary>
+    /// 记录达到额度重置检测时间的禁用账号。
+    /// </summary>
+    private sealed record ReachedQuotaResetCandidate(AuthFileItem Account, DateTime DueAtUtc);
+
+    /// <summary>
     /// 构造 AutoPollingService。
     /// </summary>
     public AutoPollingService(
@@ -328,72 +333,303 @@ public sealed class AutoPollingService : BackgroundService
     }
 
     /// <summary>
-    /// 已禁用账号的额度窗口到达重置时间后，优先触发一次强制巡检。
+    /// 已禁用账号的额度窗口到达重置时间后，先做真实检测；如需自动动作，也只处理这些到点账号本身。
     /// </summary>
     private async Task<bool> TryHandleReachedQuotaResetAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct)
     {
         var nowUtc = DateTime.UtcNow;
+        var dueCandidates = ResolveReachedQuotaResetCandidates(siteId, settings.UsedPercentThreshold, nowUtc);
+        ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, nowUtc));
+
+        if (dueCandidates.Count == 0)
+        {
+            return false;
+        }
+
+        _store.SetPollingState(true, siteId);
+        try
+        {
+            _store.AddOperationLog(
+                "inspection",
+                "inspection",
+                "auto",
+                $"检测到 {dueCandidates.Count} 个已禁用账号达到额度重置时间，开始真实检测",
+                siteId: siteId);
+
+            var decisions = await CheckReachedQuotaAccountsAsync(siteId, settings, dueCandidates, ct);
+            var refreshedNowUtc = DateTime.UtcNow;
+
+            foreach (var candidate in dueCandidates)
+            {
+                MarkReachedResetWindowsHandled(_store.GetQuota(candidate.Account.Name, siteId), settings.UsedPercentThreshold, refreshedNowUtc);
+            }
+
+            if (!settings.AutoEnableRecovered)
+            {
+                if (decisions.Any(decision => decision.Action == InspectionAction.Enable))
+                {
+                    _store.AddOperationLog("inspection", "inspection", "auto", "检测到额度已恢复，但未开启自动启用已恢复的账号，跳过额外单账号自动动作", siteId: siteId);
+                }
+
+                EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
+                ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc));
+                return true;
+            }
+
+            var mode = ResolveAutoActionMode(settings.AutoActionMode);
+            var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+            if (actionItems.Count == 0)
+            {
+                EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
+                ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc));
+                return true;
+            }
+
+            _store.AddOperationLog("inspection", "inspection", "auto", $"检测到可处理账号，开始执行 {actionItems.Count} 个单账号自动动作", siteId: siteId);
+            await _engine.ExecuteActionsAsync(
+                siteId,
+                actionItems,
+                settings.ActionWorkers,
+                onProgress: (outcome, _, _) =>
+                {
+                    _store.AddOperationLog(
+                        "inspection",
+                        "inspection",
+                        "auto",
+                        outcome.Success
+                            ? $"额度重置后自动{ResolveOutcomeLabel(outcome.Action)}成功"
+                            : $"额度重置后自动{ResolveOutcomeLabel(outcome.Action)}失败：{outcome.Error}",
+                        outcome.Success ? "info" : "error",
+                        outcome.FileName,
+                        outcome.DisplayAccount,
+                        siteId);
+                    return Task.CompletedTask;
+                },
+                ct: ct);
+
+            try
+            {
+                var files = await _engine.LoadCandidatesAsync(siteId, includeExceptions: true, ct);
+                _store.SetAccounts(files, siteId);
+            }
+            catch (Exception ex)
+            {
+                _store.AddOperationLog("inspection", "inspection", "auto", $"刷新账号状态失败：{ex.Message}", "warning", siteId: siteId);
+                _store.AddExceptionLog("inspection", "inspection", "auto", ex, "额度重置后刷新账号状态异常", level: "warning", siteId: siteId);
+            }
+
+            var completedAtUtc = DateTime.UtcNow;
+            EnsureNextInspectionScheduled(siteId, settings, completedAtUtc);
+            ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, completedAtUtc));
+            return true;
+        }
+        finally
+        {
+            if (_store.HasSite(siteId))
+            {
+                _store.SetPollingState(false, siteId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 对达到重置检测时间的禁用账号批次做真实检测，并按并发限制返回这些账号各自的巡检决策。
+    /// </summary>
+    private async Task<List<InspectionDecision>> CheckReachedQuotaAccountsAsync(
+        string siteId,
+        PatrolSiteSettings settings,
+        List<ReachedQuotaResetCandidate> candidates,
+        CancellationToken ct)
+    {
+        var targetAccounts = candidates
+            .OrderBy(item => item.DueAtUtc)
+            .ThenBy(item => item.Account.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(item => item.Account)
+            .ToList();
+
+        return await _engine.InspectAccountsAsync(
+            siteId,
+            targetAccounts,
+            settings.ProbeWorkers,
+            settings.ProbeBatchDelayMinMs,
+            settings.ProbeBatchDelayMaxMs,
+            forceRefresh: true,
+            onProgress: (decision, _, _) =>
+            {
+                _store.AddOperationLog(
+                    "inspection",
+                    "inspection",
+                    "auto",
+                    BuildResetQuotaProbeLogMessage(decision),
+                    string.IsNullOrWhiteSpace(decision.Error) ? "info" : "warning",
+                    decision.AccountName,
+                    decision.DisplayAccount,
+                    siteId);
+                return Task.CompletedTask;
+            },
+            onBatchDelay: (batchIndex, totalBatches, delay) =>
+            {
+                _store.AddOperationLog(
+                    "inspection",
+                    "inspection",
+                    "auto",
+                    $"额度重置检测第 {batchIndex}/{totalBatches} 批已完成，等待 {delay.TotalSeconds:F1} 秒后继续",
+                    siteId: siteId);
+                return Task.CompletedTask;
+            },
+            ct: ct);
+    }
+
+    /// <summary>
+    /// 收集已达到重置检测时间且尚未处理过的禁用账号。
+    /// </summary>
+    private List<ReachedQuotaResetCandidate> ResolveReachedQuotaResetCandidates(string siteId, int threshold, DateTime nowUtc)
+    {
+        return _store.GetAccounts(siteId)
+            .Where(account => account.Disabled)
+            .Select(account => new ReachedQuotaResetCandidate(account, ResolveReachedResetCheckAt(_store.GetQuota(account.Name, siteId), threshold, nowUtc)))
+            .Where(candidate => candidate.DueAtUtc != DateTime.MinValue)
+            .OrderBy(candidate => candidate.DueAtUtc)
+            .ThenBy(candidate => candidate.Account.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 计算下一次尚未到达的额度重置检测时间，用于提前唤醒轮询。
+    /// </summary>
+    private DateTime? ResolveNextResetCheckAt(string siteId, int threshold, DateTime nowUtc)
+    {
         var nextResetCheckAt = _store.GetAccounts(siteId)
             .Where(account => account.Disabled)
-            .Select(account => ResolveResetCheckAt(_store.GetQuota(account.Name, siteId), settings.UsedPercentThreshold))
+            .Select(account => ResolveUpcomingResetCheckAt(_store.GetQuota(account.Name, siteId), threshold, nowUtc))
             .Where(resetCheckAt => resetCheckAt.HasValue)
             .Select(resetCheckAt => resetCheckAt!.Value)
             .OrderBy(resetCheckAt => resetCheckAt)
             .FirstOrDefault();
 
-        if (nextResetCheckAt == DateTime.MinValue)
-        {
-            return false;
-        }
-
-        var scheduledAt = _store.GetNextScheduledAt(siteId);
-        if (scheduledAt == DateTime.MinValue || nextResetCheckAt < scheduledAt)
-        {
-            _store.SetNextScheduledAt(nextResetCheckAt, siteId);
-        }
-
-        if (nowUtc < nextResetCheckAt)
-        {
-            return false;
-        }
-
-        _store.AddOperationLog("inspection", "inspection", "auto", "检测到已禁用账号达到额度重置时间，开始强制自动巡检", siteId: siteId);
-        await RunInspectionAsync(siteId, settings, ct, forceRefresh: true);
-        if (_store.HasSite(siteId))
-        {
-            _store.SetNextScheduledAt(BuildNextRunAt(settings), siteId);
-        }
-
-        return true;
+        return nextResetCheckAt == DateTime.MinValue ? null : nextResetCheckAt;
     }
 
     /// <summary>
-    /// 计算已达到阈值的额度窗口对应的重检时间。
+    /// 计算已经达到重置检测时间且尚未处理的最早时间点。
     /// </summary>
-    private static DateTime? ResolveResetCheckAt(CodexQuotaSnapshot? quota, int threshold)
+    private static DateTime ResolveReachedResetCheckAt(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
+    {
+        return EnumerateTrackedResetWindows(quota, threshold)
+            .Select(window => ResolveResetCheckAt(window))
+            .Where(resetCheckAt => resetCheckAt <= nowUtc)
+            .OrderBy(resetCheckAt => resetCheckAt)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// 计算下一次尚未到达的重置检测时间。
+    /// </summary>
+    private static DateTime? ResolveUpcomingResetCheckAt(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
+    {
+        var nextResetCheckAt = EnumerateTrackedResetWindows(quota, threshold)
+            .Select(window => ResolveResetCheckAt(window))
+            .Where(resetCheckAt => resetCheckAt > nowUtc)
+            .OrderBy(resetCheckAt => resetCheckAt)
+            .FirstOrDefault();
+
+        return nextResetCheckAt == DateTime.MinValue ? null : nextResetCheckAt;
+    }
+
+    /// <summary>
+    /// 枚举需要跟踪重置检测时间的额度窗口：免费号只看周限额，收费号同时看周限额和 5 小时限额。
+    /// </summary>
+    private static IEnumerable<CodexQuotaWindowSnapshot> EnumerateTrackedResetWindows(CodexQuotaSnapshot? quota, int threshold)
     {
         if (quota is null || !quota.Success)
         {
-            return null;
+            yield break;
         }
 
-        var resetCheckTimes = quota.Windows
-            .Where(window => window.ResetAtUtc != DateTime.MinValue)
-            .Where(IsTrackedResetWindow)
-            .Where(window => window.UsedPercent.HasValue && window.UsedPercent.Value >= threshold)
-            .Select(window => window.ResetAtUtc + ResetCheckDelay)
-            .OrderBy(resetCheckAt => resetCheckAt)
-            .ToList();
+        var isFreePlan = string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
+        foreach (var window in quota.Windows)
+        {
+            if (window.ResetAtUtc == DateTime.MinValue)
+            {
+                continue;
+            }
 
-        return resetCheckTimes.Count == 0 ? null : resetCheckTimes[0];
+            if (!window.UsedPercent.HasValue || window.UsedPercent.Value < threshold)
+            {
+                continue;
+            }
+
+            if (window.LimitWindowSeconds == WeekSeconds)
+            {
+                if (window.LastResetHandledAt < ResolveResetCheckAt(window))
+                {
+                    yield return window;
+                }
+                continue;
+            }
+
+            if (!isFreePlan && window.LimitWindowSeconds == FiveHourSeconds && window.LastResetHandledAt < ResolveResetCheckAt(window))
+            {
+                yield return window;
+            }
+        }
     }
 
     /// <summary>
-    /// 仅跟踪 5 小时和周额度窗口的重置时间。
+    /// 将已达到时间点的额度窗口标记为已处理，避免同一重置点被反复触发。
     /// </summary>
-    private static bool IsTrackedResetWindow(CodexQuotaWindowSnapshot window)
+    private static void MarkReachedResetWindowsHandled(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
     {
-        return window.LimitWindowSeconds == FiveHourSeconds || window.LimitWindowSeconds == WeekSeconds;
+        foreach (var window in EnumerateTrackedResetWindows(quota, threshold))
+        {
+            var resetCheckAt = ResolveResetCheckAt(window);
+            if (resetCheckAt <= nowUtc)
+            {
+                window.LastResetHandledAt = nowUtc;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 计算单个额度窗口对应的重置检测时间。
+    /// </summary>
+    private static DateTime ResolveResetCheckAt(CodexQuotaWindowSnapshot window)
+    {
+        return window.ResetAtUtc + ResetCheckDelay;
+    }
+
+    /// <summary>
+    /// 如果常规轮询时间已过或尚未初始化，则重新安排下一次常规巡检。
+    /// </summary>
+    private void EnsureNextInspectionScheduled(string siteId, PatrolSiteSettings settings, DateTime nowUtc)
+    {
+        if (!_store.HasSite(siteId))
+        {
+            return;
+        }
+
+        var scheduledAt = _store.GetNextScheduledAt(siteId);
+        if (scheduledAt == DateTime.MinValue || scheduledAt <= nowUtc)
+        {
+            _store.SetNextScheduledAt(BuildNextRunAt(settings, nowUtc), siteId);
+        }
+    }
+
+    /// <summary>
+    /// 如果额度重置检测时间更早，则提前调度下一次轮询。
+    /// </summary>
+    private void ScheduleEarlierResetCheck(string siteId, DateTime? nextResetCheckAt)
+    {
+        if (!_store.HasSite(siteId) || !nextResetCheckAt.HasValue)
+        {
+            return;
+        }
+
+        var scheduledAt = _store.GetNextScheduledAt(siteId);
+        if (scheduledAt == DateTime.MinValue || nextResetCheckAt.Value < scheduledAt)
+        {
+            _store.SetNextScheduledAt(nextResetCheckAt.Value, siteId);
+        }
     }
 
     /// <summary>
@@ -424,6 +660,19 @@ public sealed class AutoPollingService : BackgroundService
         return Enum.TryParse<AutoActionMode>(value, true, out var mode)
             ? mode
             : AutoActionMode.None;
+    }
+
+    /// <summary>
+    /// 构建额度重置后的真实检测日志消息。
+    /// </summary>
+    private string BuildResetQuotaProbeLogMessage(InspectionDecision decision)
+    {
+        if (!string.IsNullOrWhiteSpace(decision.Error))
+        {
+            return $"额度重置检测失败，建议{ResolveDecisionLabel(decision.Action)}：{decision.Error}";
+        }
+
+        return $"额度重置检测完成（真实请求），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 
     /// <summary>

@@ -42,6 +42,12 @@ public sealed class CodexQuotaWindowSnapshot
     /// </summary>
     [JsonPropertyName("resetAtUtc")]
     public DateTime ResetAtUtc { get; set; }
+
+    /// <summary>
+    /// 最近一次已处理该重置点的时间，仅用于运行时避免重复触发。
+    /// </summary>
+    [JsonIgnore]
+    public DateTime LastResetHandledAt { get; set; }
 }
 
 /// <summary>
