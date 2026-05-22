@@ -1,6 +1,6 @@
 # Codex Patrol
 
-Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://github.com/kaixin1995/CPA-Manager) 的配套子项目，提供独立的 Codex 账号健康巡检、额度监控与自动处理能力。
+Codex 账号自动巡检与额度管理工具，作为 [CPA-Manager](https://github.com/seakee/CPA-Manager) 的配套子项目，提供独立的 Codex 账号健康巡检、额度监控与自动处理能力。
 
 基于 .NET 10 Native AOT 构建，编译为单文件可执行程序，无外部运行时依赖，所有运行态数据保存在内存中，无需数据库。
 
@@ -187,7 +187,7 @@ dotnet publish src/CodexPatrol -c Release -r win-x64 -o ./publish
 
 本项目在开发过程中参考了以下项目的实现：
 
-- **[CPA-Manager](https://github.com/kaixin1995/CPA-Manager)** — 本项目的父项目，提供 CPA 管理面板。Codex Patrol 的巡检决策逻辑、额度解析算法、前端 UI 布局与视觉风格均参考自该项目的 TypeScript/React 实现
+- **[CPA-Manager](https://github.com/seakee/CPA-Manager)** — 本项目的父项目，提供 CPA 管理面板。Codex Patrol 的巡检决策逻辑、额度解析算法、前端 UI 布局与视觉风格均参考自该项目的 TypeScript/React 实现
   - 巡检逻辑参考：`src/features/monitoring/codexInspection.ts`
   - 额度解析参考：`src/utils/quota/codexQuota.ts`
   - 额度展示参考：`src/components/quota/quotaConfigs.ts`
