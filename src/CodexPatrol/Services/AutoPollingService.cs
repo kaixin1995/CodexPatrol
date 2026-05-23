@@ -77,6 +77,7 @@ public sealed class AutoPollingService : BackgroundService
                 var accounts = await _engine.LoadCandidatesAsync(site.SiteId, includeExceptions: true, stoppingToken);
                 _store.SetAccounts(accounts, site.SiteId);
                 _store.AddOperationLog("system", "startup", "system", $"启动时已同步 {accounts.Count} 个账号", siteId: site.SiteId);
+                await WarmupStartupQuotasAsync(site.SiteId, site, accounts, stoppingToken);
             }
             catch (InvalidOperationException)
             {
@@ -163,6 +164,55 @@ public sealed class AutoPollingService : BackgroundService
 
             await Task.Delay(5000, stoppingToken);
         }
+    }
+
+    /// <summary>
+    /// 应用启动后，为每个站点顺序预热少量启用账号的额度缓存。
+    /// </summary>
+    private async Task WarmupStartupQuotasAsync(string siteId, PatrolSiteSettings settings, List<AuthFileItem> accounts, CancellationToken ct)
+    {
+        var enabledAccounts = accounts
+            .Where(account => !account.Disabled)
+            .Take(3)
+            .ToList();
+
+        if (enabledAccounts.Count == 0)
+        {
+            _store.AddOperationLog("quota", "startupWarmup", "system", "启动预热未找到可做真实检测的启用账号", siteId: siteId);
+            return;
+        }
+
+        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热开始，将对最多 {enabledAccounts.Count} 个启用账号做真实额度检测", siteId: siteId);
+
+        for (var index = 0; index < enabledAccounts.Count; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var account = enabledAccounts[index];
+            var decision = await _engine.InspectAccountAsync(siteId, account, forceRefresh: true, ct: ct);
+            var quota = _store.GetQuota(account.Name, siteId);
+            var weeklyUsedPercent = quota is null ? null : CodexQuotaParser.GetWeeklyUsedPercent(quota);
+            var weeklyText = weeklyUsedPercent.HasValue ? $"{weeklyUsedPercent.Value:0.##}%" : "未知";
+
+            _store.AddOperationLog(
+                "quota",
+                "startupWarmup",
+                "system",
+                !string.IsNullOrWhiteSpace(decision.Error)
+                    ? $"启动预热真实检测第 {index + 1} 个账号失败：{account.Name}，{decision.Error}"
+                    : $"启动预热真实检测第 {index + 1} 个账号完成：{account.Name}，周额度 {weeklyText}，阈值 {settings.UsedPercentThreshold}%",
+                string.IsNullOrWhiteSpace(decision.Error) ? "info" : "warning",
+                account.Name,
+                decision.DisplayAccount,
+                siteId);
+
+            if (weeklyUsedPercent.HasValue && weeklyUsedPercent.Value < settings.UsedPercentThreshold)
+            {
+                _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测停止：账号 {account.Name} 周额度 {weeklyText} 未达到阈值 {settings.UsedPercentThreshold}%", siteId: siteId);
+                return;
+            }
+        }
+
+        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测结束：已按上限探测 {enabledAccounts.Count} 个启用账号", siteId: siteId);
     }
 
     /// <summary>

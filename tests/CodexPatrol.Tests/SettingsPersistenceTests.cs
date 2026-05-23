@@ -1091,6 +1091,129 @@ public sealed class SettingsPersistenceTests
         }
     }
 
+    [Fact]
+    public async Task WarmupStartupQuotasAsync_ShouldStopAfterFirstBelowThresholdAccount()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var settings = store.GetSettings("default");
+            settings.UsedPercentThreshold = 95;
+            var accounts = new List<AuthFileItem>
+            {
+                BuildAccount("account-a", "user-a@example.com"),
+                BuildAccount("account-b", "user-b@example.com"),
+                BuildAccount("account-c", "user-c@example.com")
+            };
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 80,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 3600
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+
+            await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
+
+            Assert.Equal(1, handler.RequestCount);
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测停止：账号 account-a 周额度 80% 未达到阈值 95%"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task WarmupStartupQuotasAsync_ShouldProbeAtMostThreeEnabledAccounts()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var settings = store.GetSettings("default");
+            settings.UsedPercentThreshold = 95;
+            var accounts = new List<AuthFileItem>
+            {
+                BuildAccount("account-disabled", "disabled@example.com", disabled: true),
+                BuildAccount("account-a", "user-a@example.com"),
+                BuildAccount("account-b", "user-b@example.com"),
+                BuildAccount("account-c", "user-c@example.com"),
+                BuildAccount("account-d", "user-d@example.com")
+            };
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 100,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 3600
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+
+            await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
+
+            Assert.Equal(3, handler.RequestCount);
+            Assert.Null(store.GetQuota("account-d", "default"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测结束：已按上限探测 3 个启用账号"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
     private static HttpResponseMessage JsonResponse(ApiCallResponse response)
     {
         var json = JsonSerializer.Serialize(new
@@ -1130,6 +1253,17 @@ public sealed class SettingsPersistenceTests
         var method = typeof(AutoPollingService).GetMethod("ExecuteAsync", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(method);
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [cancellationToken]));
+        await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用启动预热逻辑，验证启动期额度探测的停止条件。
+    /// </summary>
+    private static async Task InvokeWarmupStartupQuotasAsync(AutoPollingService service, string siteId, PatrolSiteSettings settings, List<AuthFileItem> accounts, CancellationToken cancellationToken)
+    {
+        var method = typeof(AutoPollingService).GetMethod("WarmupStartupQuotasAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, accounts, cancellationToken]));
         await task;
     }
 
