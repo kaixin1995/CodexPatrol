@@ -54,9 +54,14 @@ internal sealed class SiteRuntimeState
     public bool IsPolling { get; set; }
 
     /// <summary>
-    /// 下次计划巡检时间（UTC）。
+    /// 下次常规自动巡检时间（UTC）。
     /// </summary>
     public DateTime NextScheduledAt { get; set; }
+
+    /// <summary>
+    /// 下次额度重置检查时间（UTC）。
+    /// </summary>
+    public DateTime NextResetCheckAt { get; set; }
 
     /// <summary>
     /// 最近一次巡检开始时间（UTC）。

@@ -505,6 +505,19 @@ public sealed class RuntimeStore
     }
 
     /// <summary>
+    /// 获取下次额度重置检查时间。
+    /// </summary>
+    public DateTime GetNextResetCheckAt(string? siteId = null) => GetState(siteId).NextResetCheckAt;
+
+    /// <summary>
+    /// 设置下次额度重置检查时间。
+    /// </summary>
+    public void SetNextResetCheckAt(DateTime value, string? siteId = null)
+    {
+        GetState(siteId).NextResetCheckAt = value;
+    }
+
+    /// <summary>
     /// 获取最近一次巡检开始时间。
     /// </summary>
     public DateTime GetLastRunStartedAt(string? siteId = null) => GetState(siteId).LastRunStartedAt;

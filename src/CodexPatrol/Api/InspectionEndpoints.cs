@@ -196,6 +196,7 @@ public static class InspectionEndpoints
             {
                 IsPolling = store.IsPolling(settings.SiteId),
                 NextScheduledAt = store.GetNextScheduledAt(settings.SiteId),
+                NextResetCheckAt = store.GetNextResetCheckAt(settings.SiteId),
                 LastRunStartedAt = store.GetLastRunStartedAt(settings.SiteId),
                 LastRunFinishedAt = store.GetLastRunFinishedAt(settings.SiteId),
                 AutoPollingEnabled = settings.AutoPollingEnabled,
@@ -216,8 +217,9 @@ public static class InspectionEndpoints
         {
             var settings = store.GetSettings(siteId);
             store.UpdateSettings(settings.SiteId, current => current.AutoPollingEnabled = true);
-            // 重置下次计划时间以立即触发。
+            // 重置常规巡检时间以立即触发，同时清空重置检测时间等待后台重新计算。
             store.SetNextScheduledAt(DateTime.MinValue, settings.SiteId);
+            store.SetNextResetCheckAt(DateTime.MinValue, settings.SiteId);
             store.AddOperationLog("inspection", "inspection", "manual", "已启动自动轮询", siteId: settings.SiteId);
             return Results.Ok(new AutoPollingResponse { AutoPollingEnabled = true });
         });
@@ -228,6 +230,7 @@ public static class InspectionEndpoints
             var settings = store.GetSettings(siteId);
             store.UpdateSettings(settings.SiteId, current => current.AutoPollingEnabled = false);
             store.SetNextScheduledAt(DateTime.MinValue, settings.SiteId);
+            store.SetNextResetCheckAt(DateTime.MinValue, settings.SiteId);
             store.AddOperationLog("inspection", "inspection", "manual", "已停止自动轮询", "warning", siteId: settings.SiteId);
             return Results.Ok(new AutoPollingResponse { AutoPollingEnabled = false });
         });
@@ -380,8 +383,15 @@ public static class InspectionEndpoints
         }
 
         var quota = store.GetQuota(decision.AccountName, siteId);
-        var source = quota?.FromCache == true ? "命中缓存" : "实时请求";
-        return $"探测完成（{source}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
+        if (quota?.FromCache == true)
+        {
+            var cacheReason = string.IsNullOrWhiteSpace(quota.CacheReason) ? "命中缓存" : quota.CacheReason;
+            var mode = cacheReason.Contains("跳过", StringComparison.OrdinalIgnoreCase) ? "跳过检查" : "缓存复用";
+            return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
+        }
+
+        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 
     /// <summary>

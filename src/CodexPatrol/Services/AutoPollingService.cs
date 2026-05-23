@@ -111,12 +111,14 @@ public sealed class AutoPollingService : BackgroundService
                     if (!site.Enabled)
                     {
                         _store.SetNextScheduledAt(DateTime.MinValue, site.SiteId);
+                        _store.SetNextResetCheckAt(DateTime.MinValue, site.SiteId);
                         continue;
                     }
 
                     if (!site.AutoPollingEnabled)
                     {
                         _store.SetNextScheduledAt(DateTime.MinValue, site.SiteId);
+                        _store.SetNextResetCheckAt(DateTime.MinValue, site.SiteId);
                         continue;
                     }
 
@@ -125,16 +127,20 @@ public sealed class AutoPollingService : BackgroundService
                         continue;
                     }
 
-                    // 已禁用账号到达额度重置时间 1 分钟后，优先执行额外处理。
-                    if (await TryHandleReachedQuotaResetAsync(site.SiteId, site, stoppingToken))
-                    {
-                        continue;
-                    }
-
                     var nextRun = _store.GetNextScheduledAt(site.SiteId);
                     if (nextRun == DateTime.MinValue)
                     {
-                        _store.SetNextScheduledAt(BuildNextRunAt(site), site.SiteId);
+                        await RunInspectionAsync(site.SiteId, site, stoppingToken, forceRefresh: false);
+                        if (_store.HasSite(site.SiteId))
+                        {
+                            _store.SetNextScheduledAt(BuildNextRunAt(site), site.SiteId);
+                        }
+                        continue;
+                    }
+
+                    // 已禁用账号到达额度重置时间 1 分钟后，优先执行额外处理。
+                    if (await TryHandleReachedQuotaResetAsync(site.SiteId, site, stoppingToken))
+                    {
                         continue;
                     }
 
@@ -339,7 +345,8 @@ public sealed class AutoPollingService : BackgroundService
     {
         var nowUtc = DateTime.UtcNow;
         var dueCandidates = ResolveReachedQuotaResetCandidates(siteId, settings.UsedPercentThreshold, nowUtc);
-        ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, nowUtc));
+        var nextResetCheckAt = ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, nowUtc);
+        _store.SetNextResetCheckAt(nextResetCheckAt ?? DateTime.MinValue, siteId);
 
         if (dueCandidates.Count == 0)
         {
@@ -372,7 +379,7 @@ public sealed class AutoPollingService : BackgroundService
                 }
 
                 EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
-                ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc));
+                _store.SetNextResetCheckAt(ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc) ?? DateTime.MinValue, siteId);
                 return true;
             }
 
@@ -381,7 +388,7 @@ public sealed class AutoPollingService : BackgroundService
             if (actionItems.Count == 0)
             {
                 EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
-                ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc));
+                _store.SetNextResetCheckAt(ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc) ?? DateTime.MinValue, siteId);
                 return true;
             }
 
@@ -420,7 +427,7 @@ public sealed class AutoPollingService : BackgroundService
 
             var completedAtUtc = DateTime.UtcNow;
             EnsureNextInspectionScheduled(siteId, settings, completedAtUtc);
-            ScheduleEarlierResetCheck(siteId, ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, completedAtUtc));
+            _store.SetNextResetCheckAt(ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, completedAtUtc) ?? DateTime.MinValue, siteId);
             return true;
         }
         finally
@@ -625,10 +632,10 @@ public sealed class AutoPollingService : BackgroundService
             return;
         }
 
-        var scheduledAt = _store.GetNextScheduledAt(siteId);
+        var scheduledAt = _store.GetNextResetCheckAt(siteId);
         if (scheduledAt == DateTime.MinValue || nextResetCheckAt.Value < scheduledAt)
         {
-            _store.SetNextScheduledAt(nextResetCheckAt.Value, siteId);
+            _store.SetNextResetCheckAt(nextResetCheckAt.Value, siteId);
         }
     }
 
@@ -686,8 +693,15 @@ public sealed class AutoPollingService : BackgroundService
         }
 
         var quota = _store.GetQuota(decision.AccountName, siteId);
-        var source = quota?.FromCache == true ? "命中缓存" : "实时请求";
-        return $"探测完成（{source}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
+        if (quota?.FromCache == true)
+        {
+            var cacheReason = string.IsNullOrWhiteSpace(quota.CacheReason) ? "命中缓存" : quota.CacheReason;
+            var mode = cacheReason.Contains("跳过", StringComparison.OrdinalIgnoreCase) ? "跳过检查" : "缓存复用";
+            return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
+        }
+
+        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 
     /// <summary>

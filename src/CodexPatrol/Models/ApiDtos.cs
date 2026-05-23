@@ -50,10 +50,16 @@ public sealed class InspectionStatusResponse
     public bool IsPolling { get; set; }
 
     /// <summary>
-    /// 下一次计划执行时间。
+    /// 下一次常规自动巡检时间。
     /// </summary>
     [JsonPropertyName("nextScheduledAt")]
     public DateTime NextScheduledAt { get; set; }
+
+    /// <summary>
+    /// 下一次额度重置检查时间。
+    /// </summary>
+    [JsonPropertyName("nextResetCheckAt")]
+    public DateTime NextResetCheckAt { get; set; }
 
     /// <summary>
     /// 上次巡检开始时间。

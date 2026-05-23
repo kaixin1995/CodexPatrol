@@ -161,7 +161,8 @@ async function loadInspectionStatus() {
       <p><span class="status-dot ${status.isPolling ? 'running' : 'stopped'}"></span>${status.isPolling ? '巡检运行中' : '巡检空闲'}</p>
       <p>自动轮询：${status.autoPollingEnabled ? '已启用' : '已停用'}</p>
       <p>轮询间隔：${status.pollIntervalMinutes} 分钟</p>
-      <p>下次执行：${formatDate(status.nextScheduledAt)}</p>
+      <p>常规下次巡检：${formatDate(status.nextScheduledAt)}</p>
+      <p>额度重置检查：${formatDate(status.nextResetCheckAt)}</p>
       <p>上次开始：${formatDate(status.lastRunStartedAt)}</p>
       <p>上次结束：${formatDate(status.lastRunFinishedAt)}</p>
     `;

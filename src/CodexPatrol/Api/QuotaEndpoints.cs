@@ -169,10 +169,14 @@ public static class QuotaEndpoints
         }
 
         var quota = store.GetQuota(decision.AccountName, siteId);
-        var source = quota?.FromCache == true ? "命中缓存" : "实时请求";
-        var cacheReason = quota?.FromCache == true && !string.IsNullOrWhiteSpace(quota.CacheReason)
-            ? $"（{quota.CacheReason}）"
-            : "";
-        return $"额度刷新完成：{source}{cacheReason}";
+        if (quota?.FromCache == true)
+        {
+            var cacheReason = string.IsNullOrWhiteSpace(quota.CacheReason) ? "命中缓存" : quota.CacheReason;
+            var mode = cacheReason.Contains("跳过", StringComparison.OrdinalIgnoreCase) ? "跳过检查" : "缓存复用";
+            return $"额度刷新完成：{mode}（{cacheReason}）";
+        }
+
+        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        return $"额度刷新完成：真实请求{refreshedAtText}";
     }
 }
