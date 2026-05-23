@@ -68,6 +68,7 @@ codex-patrol/
 | JSON 序列化 | `System.Text.Json` + Source Generator（**禁用反射**） |
 | 数据存储 | 进程内内存，无数据库 |
 | 敏感配置 | `connection.json`，不入库 |
+| 上游兼容基线 | `CLI Proxy API v7.1.19` |
 
 **AOT 约束要点**：
 - 禁止 `Configuration.Bind()` / `Configuration.Get<T>()`，配置逐项读取

@@ -23,6 +23,7 @@ namespace CodexPatrol.Serialization;
 [JsonSerializable(typeof(ExceptionListRequest))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(MessageResponse))]
+[JsonSerializable(typeof(AppInfoResponse))]
 [JsonSerializable(typeof(ExceptionsResponse))]
 [JsonSerializable(typeof(InspectionStatusResponse))]
 [JsonSerializable(typeof(SiteOptionResponse))]

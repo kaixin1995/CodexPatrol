@@ -203,3 +203,7 @@ export async function getRuntimeProgress() {
 export async function getOperationLogs(limit = 200) {
   return await api(`/api/runtime/logs?limit=${encodeURIComponent(limit)}`) || [];
 }
+
+export async function getAppInfo() {
+  return await api('/api/runtime/app-info');
+}

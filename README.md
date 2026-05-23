@@ -36,6 +36,9 @@ Codex Patrol 是一个面向 **Codex 账号巡检、额度管理和自动处理*
 | [CPA-Manager](https://github.com/seakee/CPA-Manager) | 参考来源 | 提供 Codex 巡检逻辑、额度解析思路，以及前端页面结构和视觉风格参考 |
 | Codex Patrol | 当前项目 | 专注于 Codex 账号巡检、额度管理、自动动作和运行态监控 |
 
+> 版本兼容说明：当前项目使用并验证的上游版本为 **CLI Proxy API v7.1.19**。
+> 为避免旧版本接口行为差异导致兼容性问题，建议优先使用该版本，不要直接按更旧版本假定兼容。
+
 ## 页面预览
 
 **额度管理**
@@ -190,7 +193,8 @@ Codex Patrol 是一个面向 **Codex 账号巡检、额度管理和自动处理*
 
 ### 前置要求
 
-- 已部署 [CLI Proxy API (CPA)](https://github.com/router-for-me/CLIProxyAPI) v7.1.0 及以上版本，并启用 Management API
+- 已部署 [CLI Proxy API (CPA)](https://github.com/router-for-me/CLIProxyAPI) **v7.1.19**，并启用 Management API
+- 文档与当前实现均以 **v7.1.19** 为兼容基线；如果使用更旧版本，可能出现接口字段或行为不一致的问题
 
 ### 配置
 

@@ -27,6 +27,18 @@ public sealed class ErrorResponse
 }
 
 /// <summary>
+/// 应用基础信息响应。
+/// </summary>
+public sealed class AppInfoResponse
+{
+    /// <summary>
+    /// 当前应用版本号。
+    /// </summary>
+    [JsonPropertyName("version")]
+    public string Version { get; set; } = "";
+}
+
+/// <summary>
 /// 例外名单响应。
 /// </summary>
 public sealed class ExceptionsResponse

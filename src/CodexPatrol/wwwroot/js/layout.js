@@ -1,4 +1,4 @@
-import { api, escapeHtml, getSelectedSiteId, loadSites, setSelectedSiteId } from './common.js';
+import { api, escapeHtml, getAppInfo, getSelectedSiteId, loadSites, setSelectedSiteId } from './common.js';
 
 // 导航图标尽量贴近原项目的浅色侧栏风格。
 const navItems = [
@@ -98,6 +98,24 @@ async function bindSiteSwitcher() {
   });
 }
 
+async function bindAppVersion() {
+  const versionValue = document.getElementById('sidebar-app-version');
+  const versionBlock = document.getElementById('sidebar-version');
+  if (!versionValue || !versionBlock) {
+    return;
+  }
+
+  try {
+    const appInfo = await getAppInfo();
+    const version = appInfo?.version || '--';
+    versionValue.textContent = version;
+    versionBlock.title = `当前版本 ${version}`;
+  } catch {
+    versionValue.textContent = '--';
+    versionBlock.title = '版本信息加载失败';
+  }
+}
+
 export function renderLayout(activePage, title, contentHtml) {
   document.title = `Codex Patrol - ${title}`;
   const collapsed = isSidebarCollapsed();
@@ -126,6 +144,10 @@ export function renderLayout(activePage, title, contentHtml) {
             </li>
           `).join('')}
         </ul>
+        <div class="sidebar-version" id="sidebar-version" title="版本信息加载中">
+          <span class="sidebar-version-label">版本号</span>
+          <span class="sidebar-version-value" id="sidebar-app-version">--</span>
+        </div>
       </nav>
 
       <div class="shell-main">
@@ -181,4 +203,5 @@ export function renderLayout(activePage, title, contentHtml) {
   });
 
   void bindSiteSwitcher();
+  void bindAppVersion();
 }

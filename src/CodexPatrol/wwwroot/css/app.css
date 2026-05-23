@@ -50,6 +50,8 @@ body {
   top: 18px;
   height: calc(100vh - 36px);
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-toolbar {
@@ -113,6 +115,30 @@ body {
   list-style: none;
   display: grid;
   gap: 8px;
+}
+
+.sidebar-version {
+  margin-top: auto;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(247, 250, 255, 0.9);
+  border: 1px solid rgba(220, 230, 243, 0.95);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-version-label {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.sidebar-version-value {
+  font-size: 14px;
+  color: var(--color-primary-hover);
+  font-weight: 800;
 }
 
 .nav-link {
@@ -201,6 +227,22 @@ body {
 
 .app-shell.sidebar-collapsed .nav-label {
   display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-version {
+  align-items: center;
+  padding: 10px 6px;
+}
+
+.app-shell.sidebar-collapsed .sidebar-version-label {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-version-value {
+  font-size: 11px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.08em;
 }
 
 /* ========== 主内容 ========== */

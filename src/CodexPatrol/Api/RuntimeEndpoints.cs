@@ -1,3 +1,4 @@
+using CodexPatrol.Models;
 using CodexPatrol.Services;
 
 namespace CodexPatrol.Api;
@@ -7,6 +8,11 @@ namespace CodexPatrol.Api;
 /// </summary>
 public static class RuntimeEndpoints
 {
+    /// <summary>
+    /// 当前系统版本号，统一由后端维护。
+    /// </summary>
+    public const string AppVersion = "V1.0.0.1";
+
     /// <summary>
     /// 注册运行时状态相关路由。
     /// </summary>
@@ -28,6 +34,15 @@ public static class RuntimeEndpoints
         group.MapGet("/usage-monitor", (RuntimeStore store) =>
         {
             return Results.Ok(store.GetUsageMonitorStatus());
+        });
+
+        // 前端布局读取版本号，避免在多个页面脚本里重复维护。
+        group.MapGet("/app-info", () =>
+        {
+            return Results.Ok(new AppInfoResponse
+            {
+                Version = AppVersion,
+            });
         });
 
         return group;
