@@ -105,6 +105,12 @@ public static class InspectionEndpoints
                 var mode = ResolveAutoActionMode(settings.AutoActionMode);
                 // 按自动动作模式筛选需要执行的账号。
                 var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+                store.AddOperationLog(
+                    "inspection",
+                    "inspection",
+                    "manual",
+                    $"手动巡检决策汇总：保留 {decisions.Count(decision => decision.Action == InspectionAction.Keep)}，禁用建议 {decisions.Count(decision => decision.Action == InspectionAction.Disable)}，启用建议 {decisions.Count(decision => decision.Action == InspectionAction.Enable)}，删除建议 {decisions.Count(decision => decision.Action == InspectionAction.Delete)}；自动模式 {mode}；自动启用 {(settings.AutoEnableRecovered ? "开启" : "关闭")}；待执行动作 {actionItems.Count} 个",
+                    siteId: resolvedSiteId);
 
                 // 有自动动作需要执行时进入此分支。
                 if (actionItems.Count > 0)
@@ -152,6 +158,10 @@ public static class InspectionEndpoints
 
                     // 执行完自动动作后刷新账号状态以保持同步。
                     await RefreshAccountsAfterActionsAsync(engine, store, resolvedSiteId, ct);
+                }
+                else
+                {
+                    store.AddOperationLog("inspection", "inspection", "manual", "本轮手动巡检没有可执行的自动动作", siteId: resolvedSiteId);
                 }
 
                 // 汇总巡检结果并写入运行时状态。

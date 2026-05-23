@@ -359,7 +359,7 @@ async function loadQuotasPage({ refreshAccountList = false } = {}) {
   try {
     if (refreshAccountList) {
       cachedAccounts = await refreshAccounts();
-    } else if (cachedAccounts.length === 0) {
+    } else {
       cachedAccounts = await getAccounts();
     }
 

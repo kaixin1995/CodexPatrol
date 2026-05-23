@@ -238,6 +238,12 @@ public sealed class AutoPollingService : BackgroundService
             var outcomes = new List<ActionOutcome>();
             var mode = ResolveAutoActionMode(settings.AutoActionMode);
             var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+            _store.AddOperationLog(
+                "inspection",
+                "inspection",
+                "auto",
+                $"自动巡检决策汇总：保留 {decisions.Count(decision => decision.Action == InspectionAction.Keep)}，禁用建议 {decisions.Count(decision => decision.Action == InspectionAction.Disable)}，启用建议 {decisions.Count(decision => decision.Action == InspectionAction.Enable)}，删除建议 {decisions.Count(decision => decision.Action == InspectionAction.Delete)}；自动模式 {mode}；自动启用 {(settings.AutoEnableRecovered ? "开启" : "关闭")}；待执行动作 {actionItems.Count} 个",
+                siteId: siteId);
 
             if (actionItems.Count > 0)
             {
@@ -292,6 +298,10 @@ public sealed class AutoPollingService : BackgroundService
                     _store.AddOperationLog("inspection", "inspection", "auto", $"刷新账号状态失败：{ex.Message}", "warning", siteId: siteId);
                     _store.AddExceptionLog("inspection", "inspection", "auto", ex, "自动巡检后刷新账号状态异常", level: "warning", siteId: siteId);
                 }
+            }
+            else
+            {
+                _store.AddOperationLog("inspection", "inspection", "auto", "本轮自动巡检没有可执行的自动动作", siteId: siteId);
             }
 
             var runResult = new InspectionRunResult
