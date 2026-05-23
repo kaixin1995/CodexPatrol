@@ -33,7 +33,7 @@ public sealed class OperationLogFileWriter
     {
         try
         {
-            var filePath = BuildLogFilePath(entry.CreatedAt, "Ope.log");
+            var filePath = BuildLogFilePath(entry.CreatedAt, ResolveOperationLogFileName(entry));
             var line = BuildLine(entry);
 
             lock (_fileLock)
@@ -77,6 +77,42 @@ public sealed class OperationLogFileWriter
         {
             // 异常日志写入失败时不再抛出，避免二次异常影响主流程。
         }
+    }
+
+    /// <summary>
+    /// 根据日志分类和操作类型决定落盘文件名，方便按主题查找。
+    /// </summary>
+    private static string ResolveOperationLogFileName(OperationLogEntry entry)
+    {
+        var category = (entry.Category ?? string.Empty).Trim().ToLowerInvariant();
+        var operationType = (entry.OperationType ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (category == "inspection")
+        {
+            return "Inspection.log";
+        }
+
+        if (category == "quota")
+        {
+            return "Quota.log";
+        }
+
+        if (category == "account")
+        {
+            return "Account.log";
+        }
+
+        if (category == "monitor" || operationType == "usagequeue")
+        {
+            return "UsageQueue.log";
+        }
+
+        if (operationType == "startup")
+        {
+            return "Startup.log";
+        }
+
+        return "System.log";
     }
 
     /// <summary>
