@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using CodexPatrol.Api;
 using CodexPatrol.Models;
 using CodexPatrol.Services;
 using Microsoft.Extensions.Logging;
@@ -214,7 +215,7 @@ public sealed class SettingsPersistenceTests
             var store = CreateStore(baseDirectory, BuildLegacyDefaults());
 
             var entry = store.AddOperationLog("inspection", "inspection", "manual", "测试日志", siteId: "default");
-            var logPath = Path.Combine(baseDirectory, "logs", entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Ope.log");
+            var logPath = Path.Combine(baseDirectory, "logs", entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Inspection.log");
             var content = File.ReadAllText(logPath);
 
             Assert.Equal("default", entry.SiteId);
@@ -248,6 +249,32 @@ public sealed class SettingsPersistenceTests
             Assert.Contains("刷新额度异常", content);
             Assert.Contains("InvalidOperationException", content);
             Assert.Contains("测试异常", content);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void AddOperationLog_ShouldWriteDifferentCategoriesToDifferentFiles()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            var quotaEntry = store.AddOperationLog("quota", "quotaRefresh", "manual", "额度刷新日志", siteId: "default");
+            var accountEntry = store.AddOperationLog("account", "accountEnable", "manual", "账号启用日志", siteId: "default");
+            var monitorEntry = store.AddOperationLog("monitor", "usageQueue", "system", "监控日志", siteId: "default");
+            var startupEntry = store.AddOperationLog("system", "startup", "system", "启动日志", siteId: "default");
+            var systemEntry = store.AddOperationLog("system", "other", "system", "系统日志", siteId: "default");
+
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", quotaEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Quota.log")));
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", accountEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Account.log")));
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", monitorEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "UsageQueue.log")));
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", startupEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Startup.log")));
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", systemEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "System.log")));
         }
         finally
         {
@@ -715,6 +742,355 @@ public sealed class SettingsPersistenceTests
             DeleteDirectory(baseDirectory);
         }
     }
+
+    [Fact]
+    public async Task UsageQueueMonitor_ShouldTreatOperationCanceledAsRetryable_WhenStoppingTokenIsNotCancelled()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var handler = new StubHttpMessageHandler(_ => throw new OperationCanceledException("timeout"));
+            var monitor = new UsageQueueMonitor(new CpaClient(new HttpClient(handler)), store, CreateLogger<UsageQueueMonitor>());
+
+            await InvokePollSiteAsync(monitor, "default");
+
+            var logs = store.GetOperationLogs(200, "default");
+            Assert.Contains(logs, item => item.Category == "monitor" && item.Level == "warning" && item.Message.Contains("超时或被取消"));
+            Assert.False(store.IsUsageQueueUnsupported("default"));
+            Assert.False(store.IsUsageMonitorActive("default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void NextScheduledAt_And_NextResetCheckAt_ShouldBeStoredSeparately()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var scheduledAt = new DateTime(2026, 5, 24, 8, 0, 0, DateTimeKind.Utc);
+            var resetCheckAt = new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc);
+
+            store.SetNextScheduledAt(scheduledAt, "default");
+            store.SetNextResetCheckAt(resetCheckAt, "default");
+
+            Assert.Equal(scheduledAt, store.GetNextScheduledAt("default"));
+            Assert.Equal(resetCheckAt, store.GetNextResetCheckAt("default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void AutoPollingStartSemantic_ShouldAllowImmediateRunWithoutLosingResetCheckSchedule()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var resetCheckAt = new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc);
+
+            store.SetNextResetCheckAt(resetCheckAt, "default");
+            store.SetNextScheduledAt(DateTime.MinValue, "default");
+
+            Assert.Equal(DateTime.MinValue, store.GetNextScheduledAt("default"));
+            Assert.Equal(resetCheckAt, store.GetNextResetCheckAt("default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void InspectionStatusResponse_ShouldExposeBothScheduledTimes()
+    {
+        var response = new InspectionStatusResponse
+        {
+            IsPolling = true,
+            NextScheduledAt = new DateTime(2026, 5, 24, 8, 0, 0, DateTimeKind.Utc),
+            NextResetCheckAt = new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc),
+            LastRunStartedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
+            LastRunFinishedAt = new DateTime(2026, 5, 23, 8, 10, 0, DateTimeKind.Utc),
+            AutoPollingEnabled = true,
+            PollIntervalMinutes = 10,
+        };
+
+        Assert.True(response.IsPolling);
+        Assert.Equal(new DateTime(2026, 5, 24, 8, 0, 0, DateTimeKind.Utc), response.NextScheduledAt);
+        Assert.Equal(new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc), response.NextResetCheckAt);
+        Assert.True(response.AutoPollingEnabled);
+        Assert.Equal(10, response.PollIntervalMinutes);
+    }
+
+    [Fact]
+    public void LogMessageMetadata_ShouldDistinguishRealRequestCacheReuseAndSkipCheck()
+    {
+        var realQuota = new CodexQuotaSnapshot
+        {
+            AccountName = "account-a",
+            RefreshedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
+            FromCache = false,
+            CacheReason = "",
+        };
+
+        var reusedQuota = new CodexQuotaSnapshot
+        {
+            AccountName = "account-b",
+            RefreshedAt = new DateTime(2026, 5, 23, 8, 5, 0, DateTimeKind.Utc),
+            FromCache = true,
+            CacheReason = "命中调用日志缓存：上次刷新后无新调用，且未到额度重置时间",
+        };
+
+        var skippedQuota = new CodexQuotaSnapshot
+        {
+            AccountName = "account-c",
+            RefreshedAt = new DateTime(2026, 5, 23, 8, 10, 0, DateTimeKind.Utc),
+            FromCache = true,
+            CacheReason = "命中禁用免费号跳过：周额度未重置，保持禁用",
+        };
+
+        Assert.False(realQuota.FromCache);
+        Assert.Contains("命中调用日志缓存", reusedQuota.CacheReason);
+        Assert.Contains("跳过", skippedQuota.CacheReason);
+    }
+
+    [Fact]
+    public void BuildInspectionProbeLogMessage_ShouldReturnFailureMessage_WhenDecisionHasError()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var decision = new InspectionDecision
+            {
+                AccountName = "account-a",
+                Action = InspectionAction.Disable,
+                Error = "上游请求失败",
+            };
+
+            var message = InvokeInspectionProbeLogMessage(store, "default", decision);
+
+            Assert.Equal("探测失败，建议禁用：上游请求失败", message);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void BuildInspectionProbeLogMessage_ShouldDistinguishCacheSkipAndRealRequest()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts([BuildAccount("account-a", "user-a@example.com")], "default");
+
+            var cachedQuota = BuildQuota("account-a", "user-a@example.com", new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc));
+            cachedQuota.FromCache = true;
+            cachedQuota.CacheReason = "命中调用日志缓存：上次刷新后无新调用，且未到额度重置时间";
+            store.SetQuota("account-a", cachedQuota, "default");
+
+            var cachedMessage = InvokeInspectionProbeLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+                Action = InspectionAction.Keep,
+                Reason = "周额度正常，保留账号",
+            });
+
+            cachedQuota.CacheReason = "命中禁用免费号跳过：周额度未重置，保持禁用";
+            store.SetQuota("account-a", cachedQuota, "default");
+
+            var skippedMessage = InvokeInspectionProbeLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+                Action = InspectionAction.Disable,
+                Reason = "免费账号已禁用，且周额度未重置，跳过本轮检查",
+            });
+
+            cachedQuota.FromCache = false;
+            cachedQuota.CacheReason = "";
+            cachedQuota.RefreshedAt = new DateTime(2026, 5, 23, 9, 15, 0, DateTimeKind.Utc);
+            store.SetQuota("account-a", cachedQuota, "default");
+
+            var realMessage = InvokeInspectionProbeLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+                Action = InspectionAction.Keep,
+                Reason = "周额度正常，保留账号",
+            });
+
+            Assert.Contains("探测完成（缓存复用）", cachedMessage);
+            Assert.Contains("命中调用日志缓存", cachedMessage);
+            Assert.Contains("探测完成（跳过检查）", skippedMessage);
+            Assert.Contains("命中禁用免费号跳过", skippedMessage);
+            Assert.Contains("探测完成（真实请求，刷新时间 2026-05-23 09:15:00 UTC）", realMessage);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void BuildQuotaRefreshLogMessage_ShouldDistinguishFailureCacheSkipAndRealRequest()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts([BuildAccount("account-a", "user-a@example.com")], "default");
+
+            var failureMessage = InvokeQuotaRefreshLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+                Error = "请求超时",
+            });
+
+            var quota = BuildQuota("account-a", "user-a@example.com", new DateTime(2026, 5, 23, 10, 0, 0, DateTimeKind.Utc));
+            quota.FromCache = true;
+            quota.CacheReason = "命中禁用免费号跳过：周额度未重置，保持禁用";
+            store.SetQuota("account-a", quota, "default");
+
+            var skippedMessage = InvokeQuotaRefreshLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+            });
+
+            quota.FromCache = false;
+            quota.CacheReason = "";
+            quota.RefreshedAt = new DateTime(2026, 5, 23, 10, 5, 0, DateTimeKind.Utc);
+            store.SetQuota("account-a", quota, "default");
+
+            var realMessage = InvokeQuotaRefreshLogMessage(store, "default", new InspectionDecision
+            {
+                AccountName = "account-a",
+            });
+
+            Assert.Equal("额度刷新失败：请求超时", failureMessage);
+            Assert.Contains("额度刷新完成：跳过检查（命中禁用免费号跳过：周额度未重置，保持禁用）", skippedMessage);
+            Assert.Equal("额度刷新完成：真实请求，刷新时间 2026-05-23 10:05:00 UTC", realMessage);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task AutoPollingService_ShouldRunInspectionImmediately_WhenNextScheduledAtIsMinValue()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.ApplySettings(new SaveSettingsRequest
+            {
+                SiteId = "default",
+                SiteName = "默认站点",
+                SiteEnabled = true,
+                CpaBaseUrl = "http://legacy-host",
+                ManagementKey = "legacy-key",
+                PollIntervalMinutes = 10,
+                PollRandomDelayMinMinutes = 0,
+                PollRandomDelayMaxMinutes = 0,
+                ProbeWorkers = 3,
+                ProbeBatchDelayMinMs = 2000,
+                ProbeBatchDelayMaxMs = 3000,
+                ActionWorkers = 4,
+                TimeoutMs = 15000,
+                RetryCount = 0,
+                AutoActionMode = "none",
+                AutoEnableRecovered = false,
+                UsedPercentThreshold = 95,
+                Provider = "codex",
+                AutoPollingEnabled = true,
+            });
+
+            var resetCheckAt = new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc);
+            store.SetNextScheduledAt(DateTime.MinValue, "default");
+            store.SetNextResetCheckAt(resetCheckAt, "default");
+
+            var cts = new CancellationTokenSource();
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Get && request.RequestUri?.AbsolutePath == "/v0/management/auth-files")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {
+                          "files": [
+                            {
+                              "name": "account-a",
+                              "type": "codex",
+                              "provider": "codex",
+                              "auth_index": "auth-account-a",
+                              "email": "user-a@example.com",
+                              "disabled": false
+                            }
+                          ],
+                          "total": 1
+                        }
+                        """, Encoding.UTF8, "application/json")
+                    };
+                }
+
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    cts.Cancel();
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 80,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 3600
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => InvokeAutoPollingExecuteAsync(service, cts.Token));
+
+            Assert.NotEqual(DateTime.MinValue, store.GetLastRunStartedAt("default"));
+            Assert.NotEqual(DateTime.MinValue, store.GetNextScheduledAt("default"));
+            Assert.Equal(resetCheckAt, store.GetNextResetCheckAt("default"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("开始自动巡检"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("探测完成（真实请求") || item.Message.Contains("探测失败"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
     private static HttpResponseMessage JsonResponse(ApiCallResponse response)
     {
         var json = JsonSerializer.Serialize(new
@@ -744,6 +1120,37 @@ public sealed class SettingsPersistenceTests
         Assert.NotNull(method);
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(monitor, [siteId, CancellationToken.None]));
         await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用自动轮询后台入口，便于验证单轮调度行为。
+    /// </summary>
+    private static async Task InvokeAutoPollingExecuteAsync(AutoPollingService service, CancellationToken cancellationToken)
+    {
+        var method = typeof(AutoPollingService).GetMethod("ExecuteAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [cancellationToken]));
+        await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用巡检日志消息构造逻辑，锁定对外文案分支。
+    /// </summary>
+    private static string InvokeInspectionProbeLogMessage(RuntimeStore store, string siteId, InspectionDecision decision)
+    {
+        var method = typeof(InspectionEndpoints).GetMethod("BuildInspectionProbeLogMessage", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        return Assert.IsType<string>(method!.Invoke(null, [store, siteId, decision]));
+    }
+
+    /// <summary>
+    /// 通过反射调用额度刷新日志消息构造逻辑，锁定对外文案分支。
+    /// </summary>
+    private static string InvokeQuotaRefreshLogMessage(RuntimeStore store, string siteId, InspectionDecision decision)
+    {
+        var method = typeof(QuotaEndpoints).GetMethod("BuildQuotaRefreshLogMessage", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        return Assert.IsType<string>(method!.Invoke(null, [store, siteId, decision]));
     }
 
     /// <summary>
