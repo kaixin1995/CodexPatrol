@@ -1124,6 +1124,35 @@ body {
   margin-bottom: 0;
 }
 
+.operations-log-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.operations-page-shell {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.operations-page-card {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.operations-page-log-scroll {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
 
 @media (max-width: 900px) {
   .auth-shell {

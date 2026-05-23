@@ -5,33 +5,47 @@ let currentCategoryFilter = 'all';
 let currentLevelFilter = 'all';
 let lastRenderedLogSignature = '';
 
+function syncOperationsLayoutHeight() {
+  const shell = document.querySelector('.operations-page-shell');
+  if (!shell) {
+    return;
+  }
+
+  const shellTop = shell.getBoundingClientRect().top;
+  const targetBottom = window.innerHeight - 18;
+  const availableHeight = Math.max(320, Math.floor(targetBottom - shellTop));
+  shell.style.height = `${availableHeight}px`;
+}
+
 function renderPage() {
   renderLayout('operations', '操作日志', `
-    <div class="page-header">
-      <h1>操作日志</h1>
-    </div>
-    <div class="card">
-      <div class="operations-log-header">
-        <h3>最近 200 条日志</h3>
-        <div class="operations-log-filters">
-          <select id="operations-category-filter" class="topbar-site-select">
-            <option value="all">全部类别</option>
-            <option value="inspection">巡检</option>
-            <option value="quota">额度刷新</option>
-            <option value="account">账号操作</option>
-            <option value="monitor">监控</option>
-            <option value="system">系统</option>
-          </select>
-          <select id="operations-level-filter" class="topbar-site-select">
-            <option value="all">全部级别</option>
-            <option value="error">仅错误</option>
-            <option value="warning">仅警告</option>
-            <option value="info">仅正常</option>
-          </select>
-          <button type="button" class="btn" id="operations-refresh-btn">手动刷新</button>
-        </div>
+    <div class="operations-page-shell">
+      <div class="page-header">
+        <h1>操作日志</h1>
       </div>
-      <div id="operations-logs" class="log-scroll"></div>
+      <div class="card operations-page-card">
+        <div class="operations-log-header">
+          <h3>最近 200 条日志</h3>
+          <div class="operations-log-filters">
+            <select id="operations-category-filter" class="topbar-site-select">
+              <option value="all">全部类别</option>
+              <option value="inspection">巡检</option>
+              <option value="quota">额度刷新</option>
+              <option value="account">账号操作</option>
+              <option value="monitor">监控</option>
+              <option value="system">系统</option>
+            </select>
+            <select id="operations-level-filter" class="topbar-site-select">
+              <option value="all">全部级别</option>
+              <option value="error">仅错误</option>
+              <option value="warning">仅警告</option>
+              <option value="info">仅正常</option>
+            </select>
+            <button type="button" class="btn" id="operations-refresh-btn">手动刷新</button>
+          </div>
+        </div>
+        <div id="operations-logs" class="log-scroll operations-page-log-scroll"></div>
+      </div>
     </div>
   `);
 }
@@ -172,6 +186,8 @@ function resolveStageLabel(stage) {
 
 async function init() {
   renderPage();
+  syncOperationsLayoutHeight();
+  window.addEventListener('resize', syncOperationsLayoutHeight);
 
   document.getElementById('operations-category-filter')?.addEventListener('change', event => {
     currentCategoryFilter = event.target.value || 'all';

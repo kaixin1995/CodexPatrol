@@ -5,7 +5,6 @@ import {
   formatDate,
   escapeHtml,
   getRuntimeProgress,
-  getOperationLogs,
 } from './common.js';
 import { renderLayout } from './layout.js';
 
@@ -46,10 +45,6 @@ function renderPage() {
     <div class="card">
       <h3>上次巡检结果</h3>
       <div id="inspection-results"></div>
-    </div>
-    <div class="card">
-      <h3>运行输出</h3>
-      <div id="inspection-logs" class="log-scroll"></div>
     </div>
   `);
 }
@@ -119,37 +114,6 @@ function renderFeedback(result) {
           </div>
         `;
       }).join('')}
-    </div>
-  `;
-}
-
-function renderLogs(logs) {
-  const container = document.getElementById('inspection-logs');
-  if (!logs?.length) {
-    container.innerHTML = '<p>暂无运行日志</p>';
-    return;
-  }
-
-  const filteredLogs = logs.filter(item => ['inspection', 'quota', 'account', 'system'].includes(item.category)).slice(0, 20);
-  if (!filteredLogs.length) {
-    container.innerHTML = '<p>暂无运行日志</p>';
-    return;
-  }
-
-  container.innerHTML = `
-    <div class="log-list">
-      ${filteredLogs.map(item => `
-        <div class="log-item ${escapeHtml(item.level || 'info')}">
-          <div class="log-item-header">
-            <span>${formatDate(item.createdAt)}</span>
-            <span>${escapeHtml(resolveSourceLabel(item.source))} / ${escapeHtml(resolveOperationLabel(item.operationType))}</span>
-          </div>
-          <div class="log-item-message">
-            ${escapeHtml(item.message || '-')}
-            ${item.displayAccount || item.accountName ? `<div class="hint" style="margin-top:4px; margin-bottom:0">账号：${escapeHtml(item.displayAccount || item.accountName)}</div>` : ''}
-          </div>
-        </div>
-      `).join('')}
     </div>
   `;
 }
@@ -224,12 +188,8 @@ async function loadInspectionResults() {
 
 async function loadRuntimePanels() {
   try {
-    const [progress, logs] = await Promise.all([
-      getRuntimeProgress(),
-      getOperationLogs(20),
-    ]);
+    const progress = await getRuntimeProgress();
     renderProgress(progress);
-    renderLogs(logs || []);
   } catch (error) {
     showToast(error.message, 'error');
   }

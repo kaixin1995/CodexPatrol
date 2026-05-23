@@ -1,4 +1,4 @@
-import { api, showToast, formatDate, refreshAccounts, getAccounts, loadExceptionNames, escapeHtml } from './common.js';
+import { api, showToast, formatDate, refreshAccounts, getAccounts, loadExceptionNames, escapeHtml, loadSites } from './common.js';
 import { renderLayout } from './layout.js';
 
 function renderPage() {
@@ -17,9 +17,10 @@ function renderPage() {
 }
 
 function renderStats(status, accountCount, quotaCount, exceptionCount) {
+  const autoPollingEnabled = status?.autoPollingEnabled === true;
   document.getElementById('dashboard-stats').innerHTML = `
-    <div class="stat-card ${status.isPolling ? 'good' : ''}">
-      <div class="stat-value">${status.isPolling ? '运行中' : '已停止'}</div>
+    <div class="stat-card ${autoPollingEnabled ? 'good' : ''}">
+      <div class="stat-value">${autoPollingEnabled ? '已启用' : '已停止'}</div>
       <div class="stat-label">自动轮询</div>
     </div>
     <div class="stat-card">
@@ -103,6 +104,7 @@ async function loadDashboard({ refreshAccountList = false } = {}) {
 
 async function init() {
   renderPage();
+  await loadSites();
   await loadDashboard({ refreshAccountList: true });
   setInterval(() => {
     loadDashboard();
