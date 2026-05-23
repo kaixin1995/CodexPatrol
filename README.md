@@ -259,6 +259,10 @@ dotnet publish src/CodexPatrol -c Release -r win-x64 -o ./publish
 
 项目内部开发说明、目录索引和模块关系请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
+## Links
+
+- [LINUX DO](https://linux.do)
+
 ## 许可证
 
 与父项目 CPA-Manager 保持一致。
