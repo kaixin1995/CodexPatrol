@@ -58,12 +58,18 @@ public sealed class UsageQueueMonitor : BackgroundService
             {
                 await PollAllSitesAsync(stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
+            catch (OperationCanceledException ex)
+            {
+                _store.AddOperationLog("monitor", "usageQueue", "system", $"usage-queue 轮询被取消，但监控服务会继续运行：{ex.Message}", level: "warning");
+                _logger.LogWarning(ex, "usage-queue 轮询被取消，但监控服务将继续运行");
+            }
             catch (Exception ex)
             {
+                _store.AddOperationLog("monitor", "usageQueue", "system", $"usage-queue 轮询异常，但监控服务会继续运行：{ex.Message}", level: "warning");
                 _logger.LogWarning(ex, "usage-queue 轮询异常");
             }
 
@@ -71,7 +77,7 @@ public sealed class UsageQueueMonitor : BackgroundService
             {
                 await Task.Delay(PollIntervalMs, stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
@@ -180,14 +186,21 @@ public sealed class UsageQueueMonitor : BackgroundService
                 $"站点 {settings.Name} 不支持 usage-queue 接口（404），后续不再轮询，额度缓存策略将不可用", level: "warning", siteId: siteId);
             _logger.LogWarning("站点 {SiteId} 不支持 usage-queue（404），后续不再轮询", siteId);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _store.AddOperationLog("monitor", "usageQueue", "system",
+                $"站点 {settings.Name} 拉取 usage-queue 超时或被取消：{ex.Message}，下次继续重试", level: "warning", siteId: siteId);
+
+            _logger.LogDebug(ex, "站点 {SiteId} usage-queue 轮询被取消或超时，下次继续重试", siteId);
         }
         catch (Exception ex)
         {
             _store.AddOperationLog("monitor", "usageQueue", "system",
-                $"站点 {settings.Name} 拉取 usage-queue 失败：{ex.Message}", level: "warning", siteId: siteId);
+                $"站点 {settings.Name} 拉取 usage-queue 失败：{ex.Message}，下次继续重试", level: "warning", siteId: siteId);
 
             // 暂时性错误不标记为不支持，下次继续重试。
             _logger.LogDebug(ex, "站点 {SiteId} usage-queue 轮询失败，下次继续重试", siteId);
