@@ -3,10 +3,11 @@
     "CodexPatrol": {
       "commandName": "Project",
       "launchBrowser": true,
+      "launchUrl": "http://localhost:22014",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
-      "applicationUrl": "https://localhost:22013;http://localhost:22014"
+      "applicationUrl": "http://localhost:22014"
     }
   }
 }
