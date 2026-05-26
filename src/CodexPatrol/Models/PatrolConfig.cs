@@ -117,6 +117,18 @@ public sealed class PersistedPatrolSettings
     public string Provider { get; set; } = "codex";
 
     /// <summary>
+    /// 是否启用优先级路由。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 优先级路由最少保持启用的账号数量。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; } = 2;
+
+    /// <summary>
     /// 从运行时站点配置提取可持久化的业务设置。
     /// </summary>
     public static PersistedPatrolSettings FromRuntime(PatrolSiteSettings settings)
@@ -137,6 +149,8 @@ public sealed class PersistedPatrolSettings
             AutoEnableRecovered = settings.AutoEnableRecovered,
             UsedPercentThreshold = settings.UsedPercentThreshold,
             Provider = settings.Provider,
+            PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
+            PriorityMinActiveCount = settings.PriorityMinActiveCount,
         };
     }
 
@@ -159,5 +173,7 @@ public sealed class PersistedPatrolSettings
         settings.AutoEnableRecovered = AutoEnableRecovered;
         settings.UsedPercentThreshold = UsedPercentThreshold;
         settings.Provider = Provider;
+        settings.PriorityRoutingEnabled = PriorityRoutingEnabled;
+        settings.PriorityMinActiveCount = PriorityMinActiveCount;
     }
 }

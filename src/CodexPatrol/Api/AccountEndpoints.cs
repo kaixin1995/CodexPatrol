@@ -46,8 +46,8 @@ public static class AccountEndpoints
                 return Results.BadRequest(new ErrorResponse { Error = ex.Message });
             }
 
-            // 同步内存中的账号禁用状态。
-            store.UpdateAccountDisabledState(accountName, disabled: true, resolvedSiteId);
+            // 同步内存中的账号禁用状态，标记为手动禁用原因。
+            store.UpdateAccountDisabledState(accountName, disabled: true, DisableReason.ManualDisabled, resolvedSiteId);
             store.AddOperationLog("account", "accountDisable", "manual", "账号已禁用，内存状态已同步", accountName: accountName, siteId: resolvedSiteId);
             return Results.Ok(new MessageResponse { Message = "已禁用" });
         });
@@ -70,8 +70,8 @@ public static class AccountEndpoints
                 return Results.BadRequest(new ErrorResponse { Error = ex.Message });
             }
 
-            // 同步内存中的账号启用状态。
-            store.UpdateAccountDisabledState(accountName, disabled: false, resolvedSiteId);
+            // 同步内存中的账号启用状态，清除禁用原因。
+            store.UpdateAccountDisabledState(accountName, disabled: false, DisableReason.None, resolvedSiteId);
             store.AddOperationLog("account", "accountEnable", "manual", "账号已启用，内存状态已同步", accountName: accountName, siteId: resolvedSiteId);
             return Results.Ok(new MessageResponse { Message = "已启用" });
         });

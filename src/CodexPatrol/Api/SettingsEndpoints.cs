@@ -59,6 +59,68 @@ public static class SettingsEndpoints
             return Results.Ok(new SaveSettingsResponse { Success = true });
         });
 
+        // 获取优先级路由状态和配置。
+        group.MapGet("/priority-routing", (RuntimeStore store, string? siteId) =>
+        {
+            var resolvedSiteId = store.ResolveSiteId(siteId);
+            var settings = store.GetSettings(resolvedSiteId);
+            var priorities = store.GetAccountPriorities(resolvedSiteId);
+
+            return Results.Ok(new PriorityRoutingStatusResponse
+            {
+                PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
+                PriorityMinActiveCount = settings.PriorityMinActiveCount,
+                AccountPriorities = priorities
+                    .Select(p => new AccountPriorityResponse { Name = p.Name, Priority = p.Priority })
+                    .ToList(),
+            });
+        });
+
+        // 更新优先级路由配置（开关 + 优先级列表）。
+        group.MapPut("/priority-routing", (UpdatePriorityRoutingRequest payload, RuntimeStore store, string? siteId) =>
+        {
+            var resolvedSiteId = store.ResolveSiteId(siteId);
+
+            // 更新优先级路由开关和最少保持数
+            store.UpdateSettings(resolvedSiteId, settings =>
+            {
+                settings.PriorityRoutingEnabled = payload.PriorityRoutingEnabled;
+                if (payload.PriorityMinActiveCount > 0)
+                {
+                    settings.PriorityMinActiveCount = payload.PriorityMinActiveCount;
+                }
+            });
+
+            // 更新优先级列表
+            if (payload.AccountPriorities is not null)
+            {
+                store.SetAccountPriorities(
+                    payload.AccountPriorities
+                        .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                        .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                        .Select(g => g.Last())
+                        .Select(p => new AccountPriority { Name = p.Name, Priority = Math.Max(1, p.Priority) })
+                        .ToList(),
+                    resolvedSiteId);
+            }
+
+            var settings = store.GetSettings(resolvedSiteId);
+            var priorities = store.GetAccountPriorities(resolvedSiteId);
+
+            store.AddOperationLog("system", "settings", "system",
+                $"优先级路由配置已更新，共 {priorities.Count} 个账号",
+                siteId: resolvedSiteId);
+
+            return Results.Ok(new PriorityRoutingStatusResponse
+            {
+                PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
+                PriorityMinActiveCount = settings.PriorityMinActiveCount,
+                AccountPriorities = priorities
+                    .Select(p => new AccountPriorityResponse { Name = p.Name, Priority = p.Priority })
+                    .ToList(),
+            });
+        });
+
         return group;
     }
 
@@ -104,6 +166,8 @@ public static class SettingsEndpoints
             AutoEnableRecovered = settings.AutoEnableRecovered,
             UsedPercentThreshold = settings.UsedPercentThreshold,
             Provider = settings.Provider,
+            PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
+            PriorityMinActiveCount = settings.PriorityMinActiveCount,
         };
     }
 }

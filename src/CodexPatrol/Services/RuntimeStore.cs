@@ -160,6 +160,7 @@ public sealed class RuntimeStore
             var siteId = BuildUniqueSiteId(payload.SiteId, payload.SiteName);
             var site = BuildDefaultSiteSettings(siteId);
             ApplyPayload(site, payload, isNewSite: true);
+            NormalizeSiteSettings(site);
             site.SiteId = siteId;
 
             var state = new SiteRuntimeState
@@ -341,6 +342,16 @@ public sealed class RuntimeStore
                 state.Accounts[file.Name] = file;
                 accountNames.Add(file.Name);
 
+                // 初始化禁用原因：CPA 同步的 disabled 状态且无已知原因时标记为 ManualDisabled
+                if (file.Disabled && !state.DisableReasons.ContainsKey(file.Name))
+                {
+                    state.DisableReasons[file.Name] = DisableReason.ManualDisabled;
+                }
+                else if (!file.Disabled)
+                {
+                    state.DisableReasons.TryRemove(file.Name, out _);
+                }
+
                 if (state.Quotas.TryGetValue(file.Name, out var quota))
                 {
                     quota.AccountName = file.Name;
@@ -405,6 +416,93 @@ public sealed class RuntimeStore
         }
     }
 
+    /// <summary>
+    /// 更新账号的禁用状态并同步设置禁用原因。
+    /// </summary>
+    public bool UpdateAccountDisabledState(string accountName, bool disabled, DisableReason reason, string? siteId = null)
+    {
+        var result = UpdateAccountDisabledState(accountName, disabled, siteId);
+        if (disabled)
+        {
+            SetDisableReason(accountName, reason, siteId);
+        }
+        else
+        {
+            ClearDisableReason(accountName, siteId);
+        }
+        return result;
+    }
+
+    // ========== Priority Routing ==========
+
+    /// <summary>
+    /// 获取指定站点的账号优先级配置列表。
+    /// </summary>
+    public List<AccountPriority> GetAccountPriorities(string? siteId = null)
+    {
+        var state = GetState(siteId);
+        return state.AccountPriorities
+            .Select(kv => new AccountPriority { Name = kv.Key, Priority = kv.Value })
+            .OrderBy(p => p.Priority)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 设置指定站点的账号优先级配置并持久化。
+    /// </summary>
+    public void SetAccountPriorities(List<AccountPriority> priorities, string? siteId = null)
+    {
+        var state = GetState(siteId);
+        lock (_configLock)
+        {
+            state.AccountPriorities.Clear();
+            foreach (var p in priorities)
+            {
+                if (!string.IsNullOrWhiteSpace(p.Name) && p.Priority > 0)
+                {
+                    state.AccountPriorities[p.Name] = p.Priority;
+                }
+            }
+            SavePatrolConfig();
+        }
+    }
+
+    /// <summary>
+    /// 获取指定账号的优先级数值，未配置时返回 null。
+    /// </summary>
+    public int? GetAccountPriority(string accountName, string? siteId = null)
+    {
+        var state = GetState(siteId);
+        return state.AccountPriorities.TryGetValue(accountName, out var priority) ? priority : null;
+    }
+
+    /// <summary>
+    /// 获取账号禁用原因。
+    /// </summary>
+    public DisableReason GetDisableReason(string accountName, string? siteId = null)
+    {
+        var state = GetState(siteId);
+        return state.DisableReasons.TryGetValue(accountName, out var reason) ? reason : DisableReason.None;
+    }
+
+    /// <summary>
+    /// 设置账号禁用原因。
+    /// </summary>
+    public void SetDisableReason(string accountName, DisableReason reason, string? siteId = null)
+    {
+        var state = GetState(siteId);
+        state.DisableReasons[accountName] = reason;
+    }
+
+    /// <summary>
+    /// 清除账号禁用原因。
+    /// </summary>
+    public void ClearDisableReason(string accountName, string? siteId = null)
+    {
+        var state = GetState(siteId);
+        state.DisableReasons.TryRemove(accountName, out _);
+    }
+
     // ========== Quotas ==========
 
     /// <summary>
@@ -426,10 +524,21 @@ public sealed class RuntimeStore
     /// <summary>
     /// 获取指定站点所有有可见数据的额度快照。
     /// </summary>
-    public List<CodexQuotaSnapshot> GetQuotas(string? siteId = null) => GetState(siteId).Quotas.Values
-        .Where(HasVisibleQuota)
-        .Select(CloneQuotaForOutput)
-        .ToList();
+    public List<CodexQuotaSnapshot> GetQuotas(string? siteId = null)
+    {
+        var state = GetState(siteId);
+        return state.Quotas.Values
+            .Where(HasVisibleQuota)
+            .Select(quota =>
+            {
+                var clone = CloneQuotaForOutput(quota);
+                clone.DisableReason = state.DisableReasons.TryGetValue(quota.AccountName, out var reason) && reason != DisableReason.None
+                    ? reason.ToString()
+                    : "";
+                return clone;
+            })
+            .ToList();
+    }
 
     /// <summary>
     /// 获取单个账号的额度快照。
@@ -1067,6 +1176,15 @@ public sealed class RuntimeStore
                 state.Exceptions.Add(exception);
             }
 
+            // 恢复账号优先级配置
+            foreach (var priority in siteConfig?.AccountPriorities ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(priority.Name))
+                {
+                    state.AccountPriorities[priority.Name] = priority.Priority;
+                }
+            }
+
             _siteStates[settings.SiteId] = state;
         }
     }
@@ -1109,6 +1227,10 @@ public sealed class RuntimeStore
                     {
                         SiteId = state.Settings.SiteId,
                         Exceptions = state.Exceptions.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                        AccountPriorities = state.AccountPriorities
+                            .Select(kv => new AccountPriority { Name = kv.Key, Priority = kv.Value })
+                            .OrderBy(p => p.Priority)
+                            .ToList(),
                         Settings = PersistedPatrolSettings.FromRuntime(state.Settings),
                     })
                     .OrderBy(site => site.SiteId, StringComparer.OrdinalIgnoreCase)
@@ -1476,6 +1598,13 @@ public sealed class RuntimeStore
         {
             settings.Provider = payload.Provider.Trim();
         }
+
+        settings.PriorityRoutingEnabled = payload.PriorityRoutingEnabled;
+
+        if (payload.PriorityMinActiveCount > 0)
+        {
+            settings.PriorityMinActiveCount = payload.PriorityMinActiveCount;
+        }
     }
 
     /// <summary>
@@ -1629,6 +1758,7 @@ public sealed class RuntimeStore
         settings.TimeoutMs = Math.Max(1000, settings.TimeoutMs);
         settings.RetryCount = Math.Max(0, settings.RetryCount);
         settings.UsedPercentThreshold = Math.Clamp(settings.UsedPercentThreshold, 1, 100);
+        settings.PriorityMinActiveCount = Math.Clamp(settings.PriorityMinActiveCount, 1, 10);
     }
 
     /// <summary>

@@ -11,6 +11,7 @@ import {
   getAccounts,
   loadExceptionNames,
   getRuntimeProgress,
+  getSelectedSiteId,
 } from './common.js';
 import { renderLayout } from './layout.js';
 
@@ -20,6 +21,8 @@ let cachedQuotas = [];
 let currentQuotaPage = 1;
 const quotaPageSize = 10;
 let currentFilter = 'enabled';
+let cachedPriorityMap = {};
+let cachedPriorityRoutingEnabled = false;
 
 function renderPage() {
   renderLayout('quotas', '额度管理', `
@@ -137,6 +140,25 @@ function renderAccountCard(account, quota) {
     ? ' <span class="badge badge-keep">例外</span>'
     : '';
 
+  // 优先级路由标签
+  let priorityBadge = '';
+  if (cachedPriorityRoutingEnabled && cachedPriorityMap[accountName]) {
+    priorityBadge = ` <span class="badge badge-priority">P${cachedPriorityMap[accountName]}</span>`;
+  }
+
+  // 禁用原因标签
+  const disableReasonLabels = {
+    QuotaExhausted: '额度耗尽',
+    OrderedStandby: '排队待命',
+    ManualDisabled: '手动禁用',
+    ErrorDisabled: '异常禁用',
+  };
+  let disableReasonBadge = '';
+  if (disabled && quota?.disableReason) {
+    const label = disableReasonLabels[quota.disableReason] || quota.disableReason;
+    disableReasonBadge = ` <span class="badge badge-disable-reason">${escapeHtml(label)}</span>`;
+  }
+
   const toggleBtn = disabled
     ? '<button class="btn btn-sm btn-success" data-action="enable-account" data-account-name="' + escapeHtml(accountName) + '">启用</button>'
     : '<button class="btn btn-sm btn-danger" data-action="disable-account" data-account-name="' + escapeHtml(accountName) + '">禁用</button>';
@@ -148,7 +170,7 @@ function renderAccountCard(account, quota) {
           <div class="quota-account" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
           <div class="quota-header-meta">
             <div class="quota-badges">
-              ${statusBadge}${exceptionBadge}${sourceBadge}
+              ${statusBadge}${disableReasonBadge}${exceptionBadge}${priorityBadge}${sourceBadge}
             </div>
             <div class="quota-file-name" title="${escapeHtml(accountName)}">${escapeHtml(accountName)}</div>
           </div>
@@ -170,11 +192,21 @@ function renderAccountCard(account, quota) {
   `;
 }
 
-// 额度分页只影响展示，不改变后端全量刷新逻辑。
 function getFilteredAccounts() {
-  if (currentFilter === 'all') return cachedAccounts;
+  let accounts = cachedAccounts;
+
+  // 优先级路由开启时，按优先级排序：有优先级的账号在前，数值越小越优先
+  if (cachedPriorityRoutingEnabled && Object.keys(cachedPriorityMap).length > 0) {
+    accounts = [...accounts].sort((a, b) => {
+      const pa = cachedPriorityMap[getAccountName(a)] ?? Infinity;
+      const pb = cachedPriorityMap[getAccountName(b)] ?? Infinity;
+      return pa - pb;
+    });
+  }
+
+  if (currentFilter === 'all') return accounts;
   const quotaMap = Object.fromEntries((cachedQuotas || []).map(q => [q.accountName, q]));
-  return cachedAccounts.filter(account => {
+  return accounts.filter(account => {
     const accountName = getAccountName(account);
     const quota = quotaMap[accountName];
     const disabled = quota?.disabled ?? getAccountDisabled(account);
@@ -363,13 +395,24 @@ async function loadQuotasPage({ refreshAccountList = false } = {}) {
       cachedAccounts = await getAccounts();
     }
 
-    const [quotas, exceptionNames] = await Promise.all([
+    const [quotas, exceptionNames, priorityData] = await Promise.all([
       api('/api/quotas'),
       loadExceptionNames(),
+      api('/api/settings/priority-routing').catch(() => null),
     ]);
 
     cachedQuotas = quotas || [];
     cachedExceptions = exceptionNames;
+
+    // 更新优先级路由缓存
+    if (priorityData) {
+      cachedPriorityRoutingEnabled = priorityData.priorityRoutingEnabled ?? false;
+      cachedPriorityMap = {};
+      (priorityData.accountPriorities || []).forEach(p => {
+        cachedPriorityMap[p.name] = p.priority;
+      });
+    }
+
     renderQuotaGrid();
   } catch (error) {
     showToast(error.message, 'error');

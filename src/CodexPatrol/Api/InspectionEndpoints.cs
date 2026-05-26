@@ -104,7 +104,7 @@ public static class InspectionEndpoints
                 var outcomes = new List<ActionOutcome>();
                 var mode = ResolveAutoActionMode(settings.AutoActionMode);
                 // 按自动动作模式筛选需要执行的账号。
-                var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+                var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, settings.PriorityRoutingEnabled, decisions);
                 store.AddOperationLog(
                     "inspection",
                     "inspection",

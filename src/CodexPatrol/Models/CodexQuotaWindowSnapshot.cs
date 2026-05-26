@@ -126,4 +126,10 @@ public sealed class CodexQuotaSnapshot
     /// </summary>
     [JsonPropertyName("lastUsageAt")]
     public DateTime LastUsageAt { get; set; }
+
+    /// <summary>
+    /// 禁用原因，仅优先级路由开启时有效。
+    /// </summary>
+    [JsonPropertyName("disableReason")]
+    public string DisableReason { get; set; } = "";
 }

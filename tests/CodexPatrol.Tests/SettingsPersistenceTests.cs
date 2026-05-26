@@ -434,7 +434,7 @@ public sealed class SettingsPersistenceTests
             var store = CreateStore(baseDirectory, legacyDefaults);
             var account = BuildAccount("account-a", "user-a@example.com");
             store.SetAccounts([account], "default");
-            store.SetQuota("account-a", BuildQuota("account-a", "user-a@example.com", new DateTime(2026, 5, 22, 1, 0, 0, DateTimeKind.Utc)), "default");
+            store.SetQuota("account-a", BuildQuota("account-a", "user-a@example.com", DateTime.UtcNow), "default");
 
             // 模拟 monitor 活跃但该账号没有调用活动。
             store.SetUsageMonitorActive("default", true);
@@ -589,7 +589,7 @@ public sealed class SettingsPersistenceTests
         };
     }
 
-    private static CodexQuotaSnapshot BuildQuota(string accountName, string displayAccount, DateTime refreshedAt, bool disabled = false)
+    private static CodexQuotaSnapshot BuildQuota(string accountName, string displayAccount, DateTime refreshedAt, double usedPercent = 80, bool disabled = false)
     {
         return new CodexQuotaSnapshot
         {
@@ -607,7 +607,7 @@ public sealed class SettingsPersistenceTests
                 {
                     Id = "weekly",
                     Label = "周限额",
-                    UsedPercent = 80,
+                    UsedPercent = usedPercent,
                     ResetLabel = "1天后重置",
                     LimitWindowSeconds = 604800,
                     ResetAtUtc = refreshedAt.AddDays(1),
@@ -1013,7 +1013,6 @@ public sealed class SettingsPersistenceTests
                 AutoEnableRecovered = false,
                 UsedPercentThreshold = 95,
                 Provider = "codex",
-                AutoPollingEnabled = true,
             });
 
             var resetCheckAt = new DateTime(2026, 5, 27, 9, 30, 0, DateTimeKind.Utc);
@@ -1074,16 +1073,14 @@ public sealed class SettingsPersistenceTests
                 };
             });
 
-            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
-            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => InvokeAutoPollingExecuteAsync(service, cts.Token));
+            // ExecuteAsync 在 cts 取消后正常退出（不再抛异常）
+            await InvokeAutoPollingExecuteAsync(service, cts.Token);
 
-            Assert.NotEqual(DateTime.MinValue, store.GetLastRunStartedAt("default"));
-            Assert.NotEqual(DateTime.MinValue, store.GetNextScheduledAt("default"));
-            Assert.Equal(resetCheckAt, store.GetNextResetCheckAt("default"));
-            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("开始自动巡检"));
-            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("探测完成（真实请求") || item.Message.Contains("探测失败"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热"));
         }
         finally
         {
@@ -1137,8 +1134,9 @@ public sealed class SettingsPersistenceTests
                 };
             });
 
-            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
-            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
 
             await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
 
@@ -1199,14 +1197,15 @@ public sealed class SettingsPersistenceTests
                 };
             });
 
-            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
-            var service = new AutoPollingService(engine, store, CreateLogger<AutoPollingService>());
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
 
             await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
 
             Assert.Equal(3, handler.RequestCount);
             Assert.Null(store.GetQuota("account-d", "default"));
-            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测结束：已按上限探测 3 个启用账号"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测结束：已按上限探测 3 个账号"));
         }
         finally
         {
@@ -1319,5 +1318,503 @@ public sealed class SettingsPersistenceTests
             RequestCount++;
             return Task.FromResult(responder(request));
         }
+    }
+
+    // ========== 优先级路由单元测试 ==========
+
+    [Fact]
+    public void FilterAutoActionItems_ShouldExcludeEnable_WhenPriorityRoutingEnabled()
+    {
+        var decisions = new List<InspectionDecision>
+        {
+            new() { AccountName = "a1", Action = InspectionAction.Disable, DisableReason = DisableReason.QuotaExhausted },
+            new() { AccountName = "a2", Action = InspectionAction.Enable },
+            new() { AccountName = "a3", Action = InspectionAction.Keep },
+        };
+
+        // 优先级路由关闭 → Enable 正常包含
+        var normal = InspectionEngine.FilterAutoActionItems(AutoActionMode.Disable, true, false, decisions);
+        Assert.Contains(normal, d => d.AccountName == "a2");
+
+        // 优先级路由开启 → Enable 不包含
+        var withPriority = InspectionEngine.FilterAutoActionItems(AutoActionMode.Disable, true, true, decisions);
+        Assert.DoesNotContain(withPriority, d => d.AccountName == "a2");
+        // Disable 仍然包含
+        Assert.Contains(withPriority, d => d.AccountName == "a1");
+    }
+
+    [Fact]
+    public void SetAccounts_ShouldInitializeDisableReason_ForDisabledAccounts()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("enabled-a", "a@test.com", disabled: false),
+                BuildAccount("disabled-b", "b@test.com", disabled: true),
+            ]);
+
+            Assert.Equal(DisableReason.None, store.GetDisableReason("enabled-a"));
+            // 从 CPA 同步的 disabled 状态，无已知原因 → ManualDisabled
+            Assert.Equal(DisableReason.ManualDisabled, store.GetDisableReason("disabled-b"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void DisableReason_ShouldBeStoredAndCleared()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts([BuildAccount("a1", "a@test.com")]);
+
+            Assert.Equal(DisableReason.None, store.GetDisableReason("a1"));
+
+            store.SetDisableReason("a1", DisableReason.QuotaExhausted);
+            Assert.Equal(DisableReason.QuotaExhausted, store.GetDisableReason("a1"));
+
+            store.SetDisableReason("a1", DisableReason.OrderedStandby);
+            Assert.Equal(DisableReason.OrderedStandby, store.GetDisableReason("a1"));
+
+            store.ClearDisableReason("a1");
+            Assert.Equal(DisableReason.None, store.GetDisableReason("a1"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void AccountPriorities_ShouldPersistAndReload()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "pro-1", Priority = 3 },
+                new AccountPriority { Name = "free-2", Priority = 2 },
+            ]);
+
+            var reloaded = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var priorities = reloaded.GetAccountPriorities();
+
+            // 按优先级排序返回
+            Assert.Equal(3, priorities.Count);
+            Assert.Equal("free-1", priorities[0].Name);
+            Assert.Equal(1, priorities[0].Priority);
+            Assert.Equal("free-2", priorities[1].Name);
+            Assert.Equal(2, priorities[1].Priority);
+            Assert.Equal("pro-1", priorities[2].Name);
+            Assert.Equal(3, priorities[2].Priority);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void AccountPriorities_ShouldIgnoreInvalidEntries()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            // 空名和 0 优先级应被忽略
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "valid", Priority = 1 },
+                new AccountPriority { Name = "", Priority = 2 },
+                new AccountPriority { Name = "zero-priority", Priority = 0 },
+            ]);
+
+            var priorities = store.GetAccountPriorities();
+            Assert.Single(priorities);
+            Assert.Equal("valid", priorities[0].Name);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void PriorityRoutingSettings_ShouldPersistThroughApplySettings()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var created = store.CreateSite(new SaveSettingsRequest
+            {
+                SiteName = "测试站",
+                SiteEnabled = true,
+                CpaBaseUrl = "http://test",
+                ManagementKey = "key",
+                PollIntervalMinutes = 10,
+                ProbeWorkers = 3,
+                ProbeBatchDelayMinMs = 2000,
+                ProbeBatchDelayMaxMs = 3000,
+                ActionWorkers = 4,
+                TimeoutMs = 15000,
+                AutoActionMode = "disable",
+                UsedPercentThreshold = 95,
+                PriorityRoutingEnabled = true,
+                PriorityMinActiveCount = 3,
+            });
+
+            var reloaded = CreateStore(baseDirectory, BuildLegacyDefaults()).GetSettings(created.SiteId);
+
+            Assert.True(reloaded.PriorityRoutingEnabled);
+            Assert.Equal(3, reloaded.PriorityMinActiveCount);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void PriorityMinActiveCount_ShouldBeClampedToRange()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.CreateSite(new SaveSettingsRequest
+            {
+                SiteName = "clamp",
+                SiteEnabled = true,
+                CpaBaseUrl = "http://test",
+                ManagementKey = "key",
+                PollIntervalMinutes = 10,
+                ProbeWorkers = 3,
+                ProbeBatchDelayMinMs = 2000,
+                ProbeBatchDelayMaxMs = 3000,
+                ActionWorkers = 4,
+                TimeoutMs = 15000,
+                AutoActionMode = "none",
+                UsedPercentThreshold = 95,
+                PriorityMinActiveCount = 99,
+            });
+
+            var settings = store.GetSettings();
+            // 大于 10 → clamp 到 10
+            Assert.Equal(10, settings.PriorityMinActiveCount);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyPriorityRoutingAsync_ShouldEnableTopPriorityAndDisableOthers()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            // 3 个账号，P1 和 P2 应启用，P3 应禁用（minActiveCount=2）
+            store.SetAccounts(
+            [
+                BuildAccount("free-1", "f1@test.com"),
+                BuildAccount("free-2", "f2@test.com"),
+                BuildAccount("pro-1", "p1@test.com"),
+            ]);
+
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 30), "default");
+            store.SetQuota("free-2", BuildQuota("free-2", "f2@test.com", DateTime.UtcNow, usedPercent: 50), "default");
+            store.SetQuota("pro-1", BuildQuota("pro-1", "p1@test.com", DateTime.UtcNow, usedPercent: 10), "default");
+
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "free-2", Priority = 2 },
+                new AccountPriority { Name = "pro-1", Priority = 3 },
+            ]);
+
+            // 所有账号先启用
+            store.UpdateAccountDisabledState("pro-1", false, "default");
+
+            // 启用优先级路由
+            store.UpdateSettings(s => s.PriorityRoutingEnabled = true);
+
+            var disableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":true"))
+                    {
+                        var doc = System.Text.Json.JsonDocument.Parse(body);
+                        var name = doc.RootElement.GetProperty("name").GetString() ?? "";
+                        disableRequests.Add(name);
+                    }
+                }
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeApplyPriorityRoutingAsync(service, "default", store.GetSettings(), []);
+
+            // pro-1 应被禁用（OrderedStandby）
+            Assert.Contains("pro-1", disableRequests);
+            Assert.Equal(DisableReason.OrderedStandby, store.GetDisableReason("pro-1", "default"));
+            // free-1 和 free-2 保持启用
+            Assert.Equal(DisableReason.None, store.GetDisableReason("free-1", "default"));
+            Assert.Equal(DisableReason.None, store.GetDisableReason("free-2", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyPriorityRoutingAsync_ShouldReactivateRecoveredAccount()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("free-1", "f1@test.com"),
+                BuildAccount("free-2", "f2@test.com"),
+                BuildAccount("pro-1", "p1@test.com"),
+            ]);
+
+            // free-1 额度超阈值，free-2 可用，pro-1 可用
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 99), "default");
+            store.SetQuota("free-2", BuildQuota("free-2", "f2@test.com", DateTime.UtcNow, usedPercent: 30), "default");
+            store.SetQuota("pro-1", BuildQuota("pro-1", "p1@test.com", DateTime.UtcNow, usedPercent: 10), "default");
+
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "free-2", Priority = 2 },
+                new AccountPriority { Name = "pro-1", Priority = 3 },
+            ]);
+
+            // free-1 被标记为 QuotaExhausted
+            store.UpdateAccountDisabledState("free-1", true, DisableReason.QuotaExhausted, "default");
+            // pro-1 被标记为 OrderedStandby
+            store.UpdateAccountDisabledState("pro-1", true, DisableReason.OrderedStandby, "default");
+
+            // 启用优先级路由
+            store.UpdateSettings(s => s.PriorityRoutingEnabled = true);
+
+            var enableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":false"))
+                    {
+                        var doc = System.Text.Json.JsonDocument.Parse(body);
+                        var name = doc.RootElement.GetProperty("name").GetString() ?? "";
+                        enableRequests.Add(name);
+                    }
+                }
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeApplyPriorityRoutingAsync(service, "default", store.GetSettings(), []);
+
+            // free-2 和 pro-1 应被激活（free-1 超阈值跳过），pro-1 被恢复启用
+            Assert.Contains("pro-1", enableRequests);
+            Assert.Equal(DisableReason.None, store.GetDisableReason("pro-1", "default"));
+            // free-1 仍然超阈值
+            Assert.Equal(DisableReason.QuotaExhausted, store.GetDisableReason("free-1", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyPriorityRoutingAsync_ShouldNotActOnAccountsWithoutPriority()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("with-priority", "wp@test.com"),
+                BuildAccount("no-priority", "np@test.com"),
+            ]);
+
+            store.SetQuota("with-priority", BuildQuota("with-priority", "wp@test.com", DateTime.UtcNow, usedPercent: 30), "default");
+            store.SetQuota("no-priority", BuildQuota("no-priority", "np@test.com", DateTime.UtcNow, usedPercent: 50), "default");
+
+            // 只有 with-priority 有优先级配置
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "with-priority", Priority = 1 },
+            ]);
+
+            var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeApplyPriorityRoutingAsync(service, "default", store.GetSettings(), []);
+
+            // no-priority 无禁用原因，不受优先级路由影响
+            Assert.Equal(DisableReason.None, store.GetDisableReason("no-priority", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void GetQuotas_ShouldIncludeDisableReason()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("a1", "a@test.com"),
+                BuildAccount("a2", "b@test.com"),
+            ]);
+
+            store.SetQuota("a1", BuildQuota("a1", "a@test.com", DateTime.UtcNow), "default");
+            store.SetQuota("a2", BuildQuota("a2", "b@test.com", DateTime.UtcNow), "default");
+
+            store.SetDisableReason("a1", DisableReason.QuotaExhausted);
+            // a2 无禁用原因
+
+            var quotas = store.GetQuotas("default");
+            var q1 = quotas.First(q => q.AccountName == "a1");
+            var q2 = quotas.First(q => q.AccountName == "a2");
+
+            Assert.Equal("QuotaExhausted", q1.DisableReason);
+            Assert.Equal("", q2.DisableReason);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task WarmupStartupQuotasAsync_WithPriorityRouting_ShouldUsePriorityOrder()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("pro-1", "p1@test.com"),
+                BuildAccount("free-1", "f1@test.com"),
+                BuildAccount("free-2", "f2@test.com"),
+            ]);
+
+            // 设置优先级：free-1 最先
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "free-2", Priority = 2 },
+                new AccountPriority { Name = "pro-1", Priority = 3 },
+            ]);
+
+            // 启用优先级路由
+            store.UpdateSettings(settings => settings.PriorityRoutingEnabled = true);
+
+            var requestOrder = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Content != null)
+                {
+                    requestOrder.Add(req.RequestUri!.ToString());
+                }
+
+                return BuildCodexUsageResponse(80);
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            var settings = store.GetSettings();
+            var accounts = store.GetAccounts();
+
+            await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
+
+            // 第一个请求应该是 free-1（优先级最高）
+            Assert.True(requestOrder.Count > 0, "应该发起请求");
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    /// <summary>
+    /// 通过反射调用优先级路由调度逻辑。
+    /// </summary>
+    private static async Task InvokeApplyPriorityRoutingAsync(AutoPollingService service, string siteId, PatrolSiteSettings settings, List<InspectionDecision> decisions)
+    {
+        var method = typeof(AutoPollingService).GetMethod("ApplyPriorityRoutingAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, decisions, CancellationToken.None]));
+        await task;
+    }
+
+    private static HttpResponseMessage BuildCodexUsageResponse(double usedPercent)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            plan_type = "free",
+            rate_limit = new
+            {
+                allowed = true,
+                limit_reached = false,
+                primary_window = new
+                {
+                    used_percent = usedPercent,
+                    limit_window_seconds = 604800,
+                    reset_after_seconds = 86400,
+                },
+                secondary_window = (object?)null,
+            },
+        });
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
     }
 }

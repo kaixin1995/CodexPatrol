@@ -227,7 +227,7 @@ public sealed class InspectionEngine
             out var _))
         {
             _store.SetQuota(file.Name, skippedQuota!, resolvedSiteId);
-            var skippedDecision = ResolveDecision(file, skippedQuota!.StatusCode, skippedQuota, settings.UsedPercentThreshold);
+            var skippedDecision = ResolveDecision(file, skippedQuota!.StatusCode, skippedQuota, settings.UsedPercentThreshold, resolvedSiteId);
             skippedDecision.Reason = "免费账号已禁用，且周额度未重置，跳过本轮检查";
             skippedDecision.CheckedAt = nowUtc;
             decision = skippedDecision;
@@ -248,7 +248,7 @@ public sealed class InspectionEngine
                 out var _))
             {
                 _store.SetQuota(file.Name, cachedQuota!, resolvedSiteId);
-                var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold);
+                var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold, resolvedSiteId);
                 cachedDecision.CheckedAt = nowUtc;
                 decision = cachedDecision;
                 return true;
@@ -269,7 +269,7 @@ public sealed class InspectionEngine
                 out var _))
             {
                 _store.SetQuota(file.Name, cachedQuota!, resolvedSiteId);
-                var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold);
+                var cachedDecision = ResolveDecision(file, cachedQuota!.StatusCode, cachedQuota, settings.UsedPercentThreshold, resolvedSiteId);
                 cachedDecision.CheckedAt = nowUtc;
                 decision = cachedDecision;
                 return true;
@@ -313,7 +313,7 @@ public sealed class InspectionEngine
         _store.ClearAccountUsage(resolvedSiteId, authIndex);
 
         // 决策。
-        var decision = ResolveDecision(file, statusCode, quota, settings.UsedPercentThreshold);
+        var decision = ResolveDecision(file, statusCode, quota, settings.UsedPercentThreshold, resolvedSiteId);
         decision.CheckedAt = DateTime.UtcNow;
         return decision;
     }
@@ -578,7 +578,8 @@ public sealed class InspectionEngine
         AuthFileItem file,
         int statusCode,
         CodexQuotaSnapshot quota,
-        int threshold)
+        int threshold,
+        string? siteId = null)
     {
         var displayAccount = ResolveDisplayAccount(file);
         var weeklyPercent = CodexQuotaParser.GetWeeklyUsedPercent(quota);
@@ -586,6 +587,9 @@ public sealed class InspectionEngine
         var isQuotaReached = CodexQuotaParser.IsQuotaReached(quota);
         var weeklyOverThreshold = weeklyPercent.HasValue && weeklyPercent.Value >= threshold;
         var fiveHourOverThreshold = fiveHourPercent.HasValue && fiveHourPercent.Value >= threshold;
+
+        // 获取优先级路由状态
+        var priorityRoutingEnabled = siteId != null && _store.GetSettings(siteId).PriorityRoutingEnabled;
 
         // 401 表示认证失效，建议删除。
         if (statusCode == 401)
@@ -601,6 +605,7 @@ public sealed class InspectionEngine
                 UsedPercent = weeklyPercent,
                 IsQuotaReached = false,
                 Disabled = file.Disabled,
+                DisableReason = DisableReason.ErrorDisabled,
             };
         }
 
@@ -612,14 +617,25 @@ public sealed class InspectionEngine
                 if (file.Disabled)
                 {
                     return BuildDecision(file, InspectionAction.Keep,
-                        "周额度达到阈值，但账号已禁用", statusCode, weeklyPercent, true);
+                        "周额度达到阈值，但账号已禁用", statusCode, weeklyPercent, true,
+                        DisableReason.QuotaExhausted);
                 }
                 return BuildDecision(file, InspectionAction.Disable,
-                    "周额度达到阈值，建议禁用账号", statusCode, weeklyPercent, true);
+                    "周额度达到阈值，建议禁用账号", statusCode, weeklyPercent, true,
+                    DisableReason.QuotaExhausted);
             }
 
+            // 周额度可用且账号已禁用
             if (file.Disabled)
             {
+                if (priorityRoutingEnabled)
+                {
+                    // 优先级路由开启时不直接启用，由优先级调度统一处理
+                    return BuildDecision(file, InspectionAction.Keep,
+                        "周额度可用，但优先级路由开启，等待优先级调度", statusCode, weeklyPercent, false,
+                        DisableReason.OrderedStandby);
+                }
+
                 return BuildDecision(file, InspectionAction.Enable,
                     fiveHourOverThreshold
                         ? "5 小时额度达到阈值，但周额度仍可用，建议立即启用账号"
@@ -645,15 +661,23 @@ public sealed class InspectionEngine
             if (file.Disabled)
             {
                 return BuildDecision(file, InspectionAction.Keep,
-                    "额度已耗尽，但账号已禁用", statusCode, null, true);
+                    "额度已耗尽，但账号已禁用", statusCode, null, true,
+                    DisableReason.QuotaExhausted);
             }
             return BuildDecision(file, InspectionAction.Disable,
-                "额度已耗尽，建议禁用账号", statusCode, null, true);
+                "额度已耗尽，建议禁用账号", statusCode, null, true,
+                DisableReason.QuotaExhausted);
         }
 
         // 账号恢复健康且当前禁用，建议启用。
         if (statusCode == 200 && file.Disabled)
         {
+            if (priorityRoutingEnabled)
+            {
+                return BuildDecision(file, InspectionAction.Keep,
+                    "账号恢复健康，但优先级路由开启，等待优先级调度", statusCode, null, false,
+                    DisableReason.OrderedStandby);
+            }
             return BuildDecision(file, InspectionAction.Enable,
                 "账号恢复健康，建议重新启用", statusCode, null, false);
         }
@@ -671,7 +695,8 @@ public sealed class InspectionEngine
         string reason,
         int statusCode,
         double? usedPercent,
-        bool isQuotaReached)
+        bool isQuotaReached,
+        DisableReason disableReason = DisableReason.None)
     {
         return new InspectionDecision
         {
@@ -684,15 +709,18 @@ public sealed class InspectionEngine
             UsedPercent = usedPercent,
             IsQuotaReached = isQuotaReached,
             Disabled = file.Disabled,
+            DisableReason = disableReason,
         };
     }
 
     /// <summary>
     /// 根据自动动作模式筛选需要执行的决策，将 Delete 模式降级为 Disable。
+    /// 优先级路由开启时，Enable 决策不在此处处理，由优先级调度统一接管。
     /// </summary>
     public static List<InspectionDecision> FilterAutoActionItems(
         AutoActionMode mode,
         bool autoEnable,
+        bool priorityRoutingEnabled,
         List<InspectionDecision> decisions)
     {
         var result = new List<InspectionDecision>();
@@ -717,7 +745,8 @@ public sealed class InspectionEngine
                 .Where(decision => decision.Action is InspectionAction.Delete or InspectionAction.Disable));
         }
 
-        if (autoEnable)
+        // 优先级路由开启时，Enable 决策由优先级调度处理
+        if (autoEnable && !priorityRoutingEnabled)
         {
             result.AddRange(decisions.Where(decision => decision.Action == InspectionAction.Enable));
         }
