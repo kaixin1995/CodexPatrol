@@ -215,13 +215,34 @@ public sealed class UsageQueueMonitor : BackgroundService
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var account in accounts)
         {
+            var display = ResolveDisplayAccount(account);
+
+            // 主匹配键：auth_index
             var authIndex = (account.Auth_Index ?? account.AuthIndex ?? string.Empty).Trim();
-            if (authIndex.Length == 0)
+            if (authIndex.Length > 0)
             {
-                continue;
+                map[authIndex] = display;
             }
 
-            map[authIndex] = ResolveDisplayAccount(account);
+            // 回退匹配键：account / email，用于付费账号可能无 auth_index 的场景
+            var accountName = (account.Account ?? string.Empty).Trim();
+            if (accountName.Length > 0 && !map.ContainsKey(accountName))
+            {
+                map[accountName] = display;
+            }
+
+            var email = (account.Email ?? string.Empty).Trim();
+            if (email.Length > 0 && !map.ContainsKey(email))
+            {
+                map[email] = display;
+            }
+
+            // 文件名也作为匹配键
+            var fileName = (account.Name ?? string.Empty).Trim();
+            if (fileName.Length > 0 && !map.ContainsKey(fileName))
+            {
+                map[fileName] = display;
+            }
         }
 
         return map;
@@ -287,17 +308,34 @@ public sealed class UsageQueueMonitor : BackgroundService
                 return "";
             }
 
+            // 优先提取 auth_index 字段
             foreach (var name in new[] { "auth_index", "authIndex", "AuthIndex" })
             {
                 if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
                 {
-                    return value.GetString() ?? "";
+                    var v = value.GetString()?.Trim() ?? "";
+                    if (v.Length > 0)
+                    {
+                        return v;
+                    }
+                }
+            }
+
+            // auth_index 为空时回退到 account/email 字段
+            foreach (var name in new[] { "account", "email" })
+            {
+                if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    var v = value.GetString()?.Trim() ?? "";
+                    if (v.Length > 0)
+                    {
+                        return v;
+                    }
                 }
             }
         }
         catch
         {
-            // 解析失败返回空
         }
 
         return "";
