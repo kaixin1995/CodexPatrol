@@ -23,6 +23,7 @@
 - [后台服务说明](#后台服务说明)
 - [巡检核心流程](#巡检核心流程)
 - [额度缓存策略](#额度缓存策略)
+- [优先级路由](#优先级路由)
 - [测试](#测试)
 
 ---
@@ -518,6 +519,64 @@ API 路由依赖：
 - 周额度使用率已达到阈值
 - 周额度尚未重置
 
+## 优先级路由
+
+### 概述
+
+优先级路由功能允许按手动排列的顺序依次消费账号，前一个额度耗尽后自动轮转到下一个。与自动巡检配合使用时形成完整的"顺序消费 + 自动轮转"链路。
+
+### 数据模型
+
+- `AccountPriority`（`PatrolSiteSettings.cs`）：账号名 + 优先级序号
+- `DisableReason` 枚举（`InspectionDecision.cs`）：`None` / `QuotaExhausted` / `OrderedStandby` / `ManualDisabled` / `ErrorDisabled`
+- `SiteRuntimeState` 新增：`DisableReasons`（ConcurrentDictionary）、`AccountPriorities`（ConcurrentDictionary）
+- 配置入口：设置页面开关 + 独立优先级路由页面（`priority.html` / `priority-page.js`）
+
+### 持久化
+
+优先级数据存储在 `patrol-config.json`，不引入额外 JSON 文件：
+- `sites[].accountPriorities`：账号优先级列表
+- `sites[].settings.priorityRoutingEnabled`：开关
+- `sites[].settings.priorityMinActiveCount`：最少保持启用数（1-10，默认 2）
+
+### 核心调度逻辑（`AutoPollingService.ApplyPriorityRoutingAsync`）
+
+1. 按优先级升序遍历账号，跳过例外账号
+2. 检查每个账号额度是否可用（周使用率 < 阈值）
+3. 收集可用账号直到达到 `minActiveCount`
+4. 对激活列表中的 `OrderedStandby` 账号执行启用（通过 CPA）
+5. 对非激活且无禁用原因的账号执行禁用并标记 `OrderedStandby`
+
+### 与巡检引擎的协作（`InspectionEngine.ResolveDecision`）
+
+当 `priorityRoutingEnabled = true` 时：
+- 已禁用但额度恢复的账号 → `Keep` + `OrderedStandby`（不自动 Enable，交给优先级调度）
+- 无额度数据但状态恢复的账号 → `Keep` + `OrderedStandby`
+- `FilterAutoActionItems` 过滤掉 Enable 决策，避免与优先级调度冲突
+
+### 额度恢复流程
+
+1. 自动巡检发现已禁用账号额度恢复 → 标记 `OrderedStandby`
+2. 等待排在前面的账号额度耗尽被禁用
+3. 下次 `ApplyPriorityRoutingAsync` 执行时，按排列顺序激活下一个 `OrderedStandby` 账号
+4. 恢复的账号不会跳过中间排队的账号，严格按优先级顺序轮转
+
+### 功能组合场景
+
+| 自动巡检 | 优先级路由 | 行为 |
+|---|---|---|
+| 关 | 关 | CPA 默认 round-robin，无自动处理 |
+| 开 | 关 | 自动禁用耗尽/启用恢复，不控制顺序 |
+| 关 | 开 | **不会生效**，优先级路由依赖自动巡检触发调度 |
+| 开 | 开 | 顺序消费 + 自动发现 + 自动轮转（推荐） |
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/settings/priority-routing` | 获取优先级路由配置 |
+| PUT | `/api/settings/priority-routing` | 更新配置（开关 + 最小启用数 + 排序） |
+
 ---
 
 ## 测试
@@ -529,4 +588,4 @@ API 路由依赖：
 | `AuthServiceTests.cs` | 4 | 密码设置/验证、哈希持久化、会话令牌、篡改检测 |
 | `CpaApiTests.cs` | 7 | CPA 连接、账号列表、额度探测、禁用/启用（集成测试，需真实 CPA） |
 | `QuotaCachePolicyTests.cs` | 8 | auth_index 提取、缓存复用/跳过逻辑、窗口过期判断 |
-| `SettingsPersistenceTests.cs` | 13 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志 |
+| `SettingsPersistenceTests.cs` | 25 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志、优先级路由调度、禁用原因管理、启动预热 |
