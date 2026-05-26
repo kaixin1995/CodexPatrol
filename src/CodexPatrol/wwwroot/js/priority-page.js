@@ -2,6 +2,7 @@ import { api, escapeHtml, getAccounts, getDisplayAccount, getSelectedSiteId, ref
 import { renderLayout } from './layout.js';
 
 let priorityEntries = [];
+let cachedAccounts = [];
 let priorityRoutingEnabled = false;
 let priorityMinActiveCount = 2;
 let currentSiteId = '';
@@ -20,10 +21,9 @@ function renderPage() {
           启用优先级路由
         </label>
         <span class="help-tip" tabindex="0" id="priority-help">?<span class="help-tip-content">开启后，账号按下方排列顺序依次消费；排在前面的账号额度耗尽后自动轮转到下一个。<br>至少保持指定数量的账号同时启用以保证可用性。</span></span>
-        <div class="form-group" style="margin:0">
-          <label style="font-size:12px;margin-bottom:2px">最少保持启用数</label>
-          <input type="number" id="priority-min-active" min="1" max="10" value="2" style="width:72px">
-        </div>
+        <label style="font-size:12px;display:inline-flex;align-items:center;gap:6px;margin:0">最少保持启用数
+          <input type="number" id="priority-min-active" min="1" max="10" value="2" style="width:72px;padding:5px 8px">
+        </label>
       </div>
     </div>
 
@@ -38,13 +38,11 @@ function renderPage() {
 }
 
 async function loadPriorityData() {
-  // 从 localStorage 获取当前站点 ID，与顶栏保持一致
   currentSiteId = getSelectedSiteId() || '';
 
-  // 先刷新账号列表
+  // 先刷新账号列表，再获取缓存
   try { await refreshAccounts(); } catch {}
-
-  const accounts = getAccounts() || [];
+  cachedAccounts = await getAccounts() || [];
 
   // 尝试加载已保存的优先级配置
   let savedPriorities = [];
@@ -64,7 +62,7 @@ async function loadPriorityData() {
     priorityEntries = savedPriorities.map(p => ({ name: p.name, priority: p.priority }));
     const existingNames = new Set(priorityEntries.map(e => e.name.toLowerCase()));
     let nextPriority = priorityEntries.length;
-    for (const a of accounts) {
+    for (const a of cachedAccounts) {
       if (!existingNames.has(a.name.toLowerCase())) {
         nextPriority++;
         priorityEntries.push({ name: a.name, priority: nextPriority });
@@ -72,7 +70,7 @@ async function loadPriorityData() {
     }
   } else {
     // 从未配置：用全部账号按默认顺序初始化
-    priorityEntries = accounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
+    priorityEntries = cachedAccounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
   }
 
   document.getElementById('priority-enabled').checked = priorityRoutingEnabled;
@@ -84,14 +82,13 @@ function renderPriorityList() {
   const container = document.getElementById('priority-list');
   if (!container) return;
 
-  const accounts = getAccounts() || [];
-  const accountMap = {};
-  accounts.forEach(a => { accountMap[a.name] = a; });
-
   if (priorityEntries.length === 0) {
     container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0">暂无账号，请先在系统设置中配置站点并同步账号</div>`;
     return;
   }
+
+  const accountMap = {};
+  cachedAccounts.forEach(a => { accountMap[a.name] = a; });
 
   let html = '';
   priorityEntries.forEach((entry, index) => {
@@ -191,8 +188,7 @@ async function savePriorityConfig() {
 }
 
 function resetToDefaultOrder() {
-  const accounts = getAccounts() || [];
-  priorityEntries = accounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
+  priorityEntries = cachedAccounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
   renderPriorityList();
 }
 
