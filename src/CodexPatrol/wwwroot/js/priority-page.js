@@ -3,9 +3,42 @@ import { renderLayout } from './layout.js';
 
 let priorityEntries = [];
 let cachedAccounts = [];
+let cachedQuotas = [];
 let priorityRoutingEnabled = false;
 let priorityMinActiveCount = 2;
 let currentSiteId = '';
+
+function getQuotaWindow(quota, seconds) {
+  return quota?.windows?.find(window => Number(window.limitWindowSeconds) === seconds) || null;
+}
+
+function formatUsedPercent(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : '--';
+}
+
+function buildPriorityQuotaText(quota) {
+  if (!quota) {
+    return '暂无额度';
+  }
+
+  const weeklyWindow = getQuotaWindow(quota, 604800);
+  const fiveHourWindow = getQuotaWindow(quota, 18000);
+  const parts = [];
+
+  if (weeklyWindow) {
+    parts.push(`已用周额度 ${formatUsedPercent(weeklyWindow.usedPercent)}`);
+  }
+
+  if (!String(quota.planType || '').trim().toLowerCase().startsWith('free') && fiveHourWindow) {
+    parts.push(`已用 5 小时额度 ${formatUsedPercent(fiveHourWindow.usedPercent)}`);
+  }
+
+  if (parts.length > 0) {
+    return parts.join(' · ');
+  }
+
+  return quota.errorMessage ? '额度异常' : '暂无额度';
+}
 
 function renderPage() {
   renderLayout('priority', '优先级路由', `
@@ -43,6 +76,11 @@ async function loadPriorityData() {
   // 先刷新账号列表，再获取缓存
   try { await refreshAccounts(); } catch {}
   cachedAccounts = await getAccounts() || [];
+  try {
+    cachedQuotas = await api('/api/quotas') || [];
+  } catch {
+    cachedQuotas = [];
+  }
 
   // 尝试加载已保存的优先级配置
   let savedPriorities = [];
@@ -88,22 +126,31 @@ function renderPriorityList() {
   }
 
   const accountMap = {};
+  const quotaMap = {};
   cachedAccounts.forEach(a => { accountMap[a.name] = a; });
+  cachedQuotas.forEach(q => { quotaMap[q.accountName] = q; });
 
   let html = '';
   priorityEntries.forEach((entry, index) => {
     const account = accountMap[entry.name];
+    const quota = quotaMap[entry.name];
     const displayName = account
-      ? (getDisplayAccount(account) || account.account || account.email || account.label || account.name)
+      ? (getDisplayAccount(account, quota) || account.account || account.email || account.label || account.name)
       : entry.name;
     const isDisabled = account?.disabled;
     const statusClass = isDisabled ? 'badge-bad' : 'badge-good';
     const statusText = isDisabled ? '已禁用' : '启用中';
+    const planType = quota?.planType?.trim();
+    const quotaText = buildPriorityQuotaText(quota);
 
     html += `<div class="priority-row" draggable="true" data-index="${index}">
       <span class="drag-handle" title="拖拽排序">⠿</span>
       <span class="priority-badge">P${index + 1}</span>
-      <span class="priority-label" title="${escapeHtml(entry.name)}">${escapeHtml(displayName)}</span>
+      <div class="priority-main" title="${escapeHtml(entry.name)}">
+        <span class="priority-label">${escapeHtml(displayName)}</span>
+        <span class="priority-quota">${escapeHtml(quotaText)}</span>
+      </div>
+      ${planType ? `<span class="priority-plan" title="套餐：${escapeHtml(planType)}">${escapeHtml(planType)}</span>` : ''}
       <span class="badge ${statusClass}" style="font-size:10px;padding:2px 6px;border-radius:10px">${statusText}</span>
     </div>`;
   });

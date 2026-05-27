@@ -724,13 +724,31 @@ body {
   cursor: grab; flex-shrink: 0; font-size: 14px; opacity: .5;
 }
 .priority-row .drag-handle:hover { opacity: 1; }
+.priority-row .priority-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
 .priority-row .priority-label {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 13px; color: var(--color-text);
+}
+.priority-row .priority-quota {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--color-text-secondary);
 }
 .priority-row .priority-badge {
   font-size: 11px; background: #f5f3ff; color: #7c3aed;
   padding: 2px 8px; border-radius: 10px; flex-shrink: 0;
+}
+.priority-row .priority-plan {
+  font-size: 10px;
+  background: #eef2ff;
+  color: #4f46e5;
+  padding: 2px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
 }
 .priority-row .btn { padding: 2px 8px; font-size: 12px; flex-shrink: 0; }
 
