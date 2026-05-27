@@ -11,7 +11,7 @@ public static class RuntimeEndpoints
     /// <summary>
     /// 当前系统版本号，统一由后端维护。
     /// </summary>
-    public const string AppVersion = "V1.0.0.2";
+    public const string AppVersion = "V1.0.0.3";
 
     /// <summary>
     /// 注册运行时状态相关路由。
