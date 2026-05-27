@@ -3,6 +3,37 @@ using System.Text.Json.Serialization;
 namespace CodexPatrol.Models;
 
 /// <summary>
+/// 账号禁用原因。
+/// </summary>
+public enum DisableReason
+{
+    /// <summary>
+    /// 未禁用。
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// 巡检策略禁用：额度达到阈值。
+    /// </summary>
+    QuotaExhausted,
+
+    /// <summary>
+    /// 顺序策略待命：为了优先级排队，暂不启用。
+    /// </summary>
+    OrderedStandby,
+
+    /// <summary>
+    /// 手动禁用：用户在前端手动操作。
+    /// </summary>
+    ManualDisabled,
+
+    /// <summary>
+    /// 异常禁用：探测失败等异常情况。
+    /// </summary>
+    ErrorDisabled,
+}
+
+/// <summary>
 /// 巡检动作类型。
 /// </summary>
 public enum InspectionAction
@@ -119,6 +150,12 @@ public sealed class InspectionDecision
     /// </summary>
     [JsonPropertyName("error")]
     public string Error { get; set; } = "";
+
+    /// <summary>
+    /// 决策对应的禁用原因（仅当 Action 为 Disable 或 Enable 时有意义）。
+    /// </summary>
+    [JsonPropertyName("disableReason")]
+    public DisableReason DisableReason { get; set; } = DisableReason.None;
 }
 
 /// <summary>
@@ -137,6 +174,12 @@ public sealed class InspectionRunResult
     /// </summary>
     [JsonPropertyName("actionOutcomes")]
     public List<ActionOutcome> ActionOutcomes { get; set; } = [];
+
+    /// <summary>
+    /// 优先级路由调度结果列表。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingOutcomes")]
+    public List<ActionOutcome> PriorityRoutingOutcomes { get; set; } = [];
 
     /// <summary>
     /// 参与巡检的总账号数。

@@ -124,6 +124,7 @@ public sealed class UsageQueueMonitor : BackgroundService
             var missingAuthIndexCount = 0;
             var newActiveCount = 0;
             var matchedAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var unmatchedValues = new List<string>();
 
             foreach (var rawItem in items)
             {
@@ -145,6 +146,15 @@ public sealed class UsageQueueMonitor : BackgroundService
                 else
                 {
                     unmatchedAuthIndexCount++;
+                    // 保留未匹配值用于诊断日志
+                    if (unmatchedValues.Count < 5)
+                    {
+                        unmatchedValues.Add(authIndex);
+                    }
+                    // 未匹配的原始报文写入本地日志，等级 warning，方便排查
+                    _store.AddOperationLog("monitor", "usageQueue", "system",
+                        $"站点 {settings.Name} usage-queue 未匹配记录，提取值：{authIndex}，原始报文：{rawItem}",
+                        level: "warning", siteId: siteId);
                 }
 
                 if (!_store.HasAccountUsage(siteId, authIndex))
@@ -166,17 +176,15 @@ public sealed class UsageQueueMonitor : BackgroundService
                     $"站点 {settings.Name} 的 usage-queue 监控已激活，开始消费调用队列", siteId: siteId);
             }
 
-            _store.AddOperationLog(
-                "monitor",
-                "usageQueue",
-                "system",
-                BuildPollSummaryMessage(settings.Name, items.Count, parsedAuthIndexCount, matchedAccountCount, unmatchedAuthIndexCount, missingAuthIndexCount, newActiveCount, matchedAccounts),
-                siteId: siteId);
-
-            if (items.Count == 0)
+            // 空队列不输出日志，减少噪音
+            if (items.Count > 0)
             {
-                _store.AddOperationLog("monitor", "usageQueue", "system",
-                    $"站点 {settings.Name} 本轮未获取到新的 usage-queue 记录", siteId: siteId);
+                _store.AddOperationLog(
+                    "monitor",
+                    "usageQueue",
+                    "system",
+                    BuildPollSummaryMessage(settings.Name, items.Count, parsedAuthIndexCount, matchedAccountCount, unmatchedAuthIndexCount, missingAuthIndexCount, newActiveCount, matchedAccounts, unmatchedValues, knownAuthIndexMap),
+                    siteId: siteId);
             }
         }
         catch (HttpRequestException ex) when (ex.Message.Contains("404") || ex.Message.Contains("Not Found"))
@@ -215,13 +223,34 @@ public sealed class UsageQueueMonitor : BackgroundService
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var account in accounts)
         {
+            var display = ResolveDisplayAccount(account);
+
+            // 主匹配键：auth_index
             var authIndex = (account.Auth_Index ?? account.AuthIndex ?? string.Empty).Trim();
-            if (authIndex.Length == 0)
+            if (authIndex.Length > 0)
             {
-                continue;
+                map[authIndex] = display;
             }
 
-            map[authIndex] = ResolveDisplayAccount(account);
+            // 回退匹配键：account / email，用于付费账号可能无 auth_index 的场景
+            var accountName = (account.Account ?? string.Empty).Trim();
+            if (accountName.Length > 0 && !map.ContainsKey(accountName))
+            {
+                map[accountName] = display;
+            }
+
+            var email = (account.Email ?? string.Empty).Trim();
+            if (email.Length > 0 && !map.ContainsKey(email))
+            {
+                map[email] = display;
+            }
+
+            // 文件名也作为匹配键
+            var fileName = (account.Name ?? string.Empty).Trim();
+            if (fileName.Length > 0 && !map.ContainsKey(fileName))
+            {
+                map[fileName] = display;
+            }
         }
 
         return map;
@@ -238,13 +267,19 @@ public sealed class UsageQueueMonitor : BackgroundService
         int unmatchedAuthIndexCount,
         int missingAuthIndexCount,
         int newActiveCount,
-        HashSet<string> matchedAccounts)
+        HashSet<string> matchedAccounts,
+        List<string> unmatchedValues,
+        Dictionary<string, string> knownMap)
     {
         var matchedPreview = matchedAccounts.Count > 0
             ? $"，命中账号：{string.Join('、', matchedAccounts.Take(3))}{(matchedAccounts.Count > 3 ? " 等" : string.Empty)}"
             : string.Empty;
 
-        return $"站点 {siteName} 本轮拉取 {itemsCount} 条 usage-queue 记录，解析出 {parsedAuthIndexCount} 个 auth_index，匹配到 {matchedAccountCount} 条已知账号记录，未匹配 {unmatchedAuthIndexCount} 条，缺少 auth_index {missingAuthIndexCount} 条，新增活跃账号 {newActiveCount} 个{matchedPreview}";
+        var unmatchedPreview = unmatchedAuthIndexCount > 0 && unmatchedValues.Count > 0
+            ? $"，未匹配值：[{string.Join(", ", unmatchedValues)}]，已知键：[{string.Join(", ", knownMap.Keys.Take(10))}]"
+            : string.Empty;
+
+        return $"站点 {siteName} 本轮拉取 {itemsCount} 条 usage-queue 记录，解析出 {parsedAuthIndexCount} 个 auth_index，匹配到 {matchedAccountCount} 条已知账号记录，未匹配 {unmatchedAuthIndexCount} 条，缺少 auth_index {missingAuthIndexCount} 条，新增活跃账号 {newActiveCount} 个{matchedPreview}{unmatchedPreview}";
     }
 
     /// <summary>
@@ -287,17 +322,34 @@ public sealed class UsageQueueMonitor : BackgroundService
                 return "";
             }
 
+            // 优先提取 auth_index 字段
             foreach (var name in new[] { "auth_index", "authIndex", "AuthIndex" })
             {
                 if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
                 {
-                    return value.GetString() ?? "";
+                    var v = value.GetString()?.Trim() ?? "";
+                    if (v.Length > 0)
+                    {
+                        return v;
+                    }
+                }
+            }
+
+            // auth_index 为空时回退到 account/email 字段
+            foreach (var name in new[] { "account", "email" })
+            {
+                if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    var v = value.GetString()?.Trim() ?? "";
+                    if (v.Length > 0)
+                    {
+                        return v;
+                    }
                 }
             }
         }
         catch
         {
-            // 解析失败返回空
         }
 
         return "";

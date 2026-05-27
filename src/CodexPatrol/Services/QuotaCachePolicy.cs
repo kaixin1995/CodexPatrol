@@ -3,7 +3,7 @@ using CodexPatrol.Models;
 namespace CodexPatrol.Services;
 
 /// <summary>
-/// 基于最近调用时间和额度窗口重置时间判断是否可复用缓存。
+/// 基于最近调用时间、额度窗口重置时间和账号级真实刷新窗口判断是否可复用缓存。
 /// </summary>
 public static class QuotaCachePolicy
 {
@@ -11,6 +11,45 @@ public static class QuotaCachePolicy
     /// 周窗口的秒数常量。
     /// </summary>
     private const int WeekSeconds = 604_800;
+
+    /// <summary>
+    /// 账号最早从 8 小时开始进入分散真实刷新窗口，避免所有账号同时过期。
+    /// </summary>
+    private static readonly TimeSpan MinScheduledRealRefreshAge = TimeSpan.FromHours(8);
+
+    /// <summary>
+    /// 账号最晚在 9 小时 50 分进入真实刷新窗口，给 10 小时硬上限预留缓冲。
+    /// </summary>
+    private static readonly TimeSpan MaxScheduledRealRefreshAge = TimeSpan.FromHours(9).Add(TimeSpan.FromMinutes(50));
+
+    /// <summary>
+    /// 计算该账号下一次应执行真实请求的时间点。
+    /// </summary>
+    public static DateTime? GetScheduledRealRefreshAt(
+        CodexQuotaSnapshot? existing,
+        string siteId,
+        string accountName)
+    {
+        if (existing is null || existing.RefreshedAt == DateTime.MinValue)
+        {
+            return null;
+        }
+
+        return existing.RefreshedAt + ResolveScheduledRealRefreshAge(siteId, accountName);
+    }
+
+    /// <summary>
+    /// 判断该账号是否已进入分散真实刷新窗口，命中后必须走真实请求。
+    /// </summary>
+    public static bool HasReachedScheduledRealRefreshAt(
+        CodexQuotaSnapshot? existing,
+        string siteId,
+        string accountName,
+        DateTime nowUtc)
+    {
+        var scheduledAtUtc = GetScheduledRealRefreshAt(existing, siteId, accountName);
+        return !scheduledAtUtc.HasValue || nowUtc >= scheduledAtUtc.Value;
+    }
 
     /// <summary>
     /// 尝试复用已有的额度快照。满足所有条件时返回 true 并输出克隆快照和原因。
@@ -147,13 +186,13 @@ public static class QuotaCachePolicy
     }
 
     /// <summary>
-    /// 克隆额度快照并标记为缓存来源。
+    /// 克隆额度快照并标记为缓存来源，同时保留最后一次真实请求时间。
     /// </summary>
     private static CodexQuotaSnapshot CloneQuota(
         CodexQuotaSnapshot existing,
         string displayAccount,
         bool disabled,
-        DateTime refreshedAtUtc,
+        DateTime checkedAtUtc,
         DateTime? lastUsageAtUtc,
         string cacheReason)
     {
@@ -163,7 +202,8 @@ public static class QuotaCachePolicy
             DisplayAccount = displayAccount,
             PlanType = existing.PlanType,
             Disabled = disabled,
-            RefreshedAt = refreshedAtUtc,
+            CheckedAt = checkedAtUtc,
+            RefreshedAt = existing.RefreshedAt,
             StatusCode = existing.StatusCode,
             Success = existing.Success,
             ErrorMessage = existing.ErrorMessage,
@@ -180,5 +220,39 @@ public static class QuotaCachePolicy
                 ResetAtUtc = window.ResetAtUtc,
             }).ToList(),
         };
+    }
+
+    /// <summary>
+    /// 为站点内账号计算稳定的分散真实刷新时间，避免同一批账号同时过期。
+    /// </summary>
+    private static TimeSpan ResolveScheduledRealRefreshAge(string siteId, string accountName)
+    {
+        var spreadMinutes = (int)(MaxScheduledRealRefreshAge - MinScheduledRealRefreshAge).TotalMinutes;
+        var stableKey = $"{siteId.Trim().ToLowerInvariant()}\n{accountName.Trim().ToLowerInvariant()}";
+        var offsetMinutes = ComputeStableBucket(stableKey, spreadMinutes + 1);
+        return MinScheduledRealRefreshAge + TimeSpan.FromMinutes(offsetMinutes);
+    }
+
+    /// <summary>
+    /// 使用稳定哈希将账号映射到固定桶位，保证重启后分散结果不漂移。
+    /// </summary>
+    private static int ComputeStableBucket(string value, int modulo)
+    {
+        if (modulo <= 1)
+        {
+            return 0;
+        }
+
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (var ch in value)
+            {
+                hash ^= ch;
+                hash *= 16777619;
+            }
+
+            return (int)(hash % (uint)modulo);
+        }
     }
 }

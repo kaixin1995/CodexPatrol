@@ -122,6 +122,19 @@ public sealed class PatrolSiteSettings
     public string Provider { get; set; } = "codex";
 
     /// <summary>
+    /// 是否启用优先级路由。关闭时所有账号同等对待，启用时按优先级顺序调度。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 优先级路由最少保持启用的账号数量，默认 2。
+    /// 防止当前账号在两次巡检之间额度耗尽导致 CPA 无可用账号。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; } = 2;
+
+    /// <summary>
     /// 浅拷贝当前站点配置，返回独立实例。
     /// </summary>
     public PatrolSiteSettings Clone()
@@ -147,6 +160,8 @@ public sealed class PatrolSiteSettings
             AutoEnableRecovered = AutoEnableRecovered,
             UsedPercentThreshold = UsedPercentThreshold,
             Provider = Provider,
+            PriorityRoutingEnabled = PriorityRoutingEnabled,
+            PriorityMinActiveCount = PriorityMinActiveCount,
         };
     }
 }
@@ -218,6 +233,24 @@ public sealed class CpaConnectionSite
 }
 
 /// <summary>
+/// 单个账号的优先级配置。
+/// </summary>
+public sealed class AccountPriority
+{
+    /// <summary>
+    /// 账号名称，与 AuthFileItem.Name 对应。
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// 优先级数值，越小越优先。0 表示未配置同等优先。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; set; }
+}
+
+/// <summary>
 /// patrol-config.json 中单个站点的非敏感业务配置。
 /// </summary>
 public sealed class PatrolSiteConfig
@@ -233,6 +266,12 @@ public sealed class PatrolSiteConfig
     /// </summary>
     [JsonPropertyName("exceptions")]
     public List<string> Exceptions { get; set; } = [];
+
+    /// <summary>
+    /// 该站点的账号优先级配置，数值越小越优先。
+    /// </summary>
+    [JsonPropertyName("accountPriorities")]
+    public List<AccountPriority> AccountPriorities { get; set; } = [];
 
     /// <summary>
     /// 该站点的业务配置。

@@ -141,6 +141,29 @@ body {
   font-weight: 800;
 }
 
+.sidebar-version-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.sidebar-version-link svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+.sidebar-version-link:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
 .nav-link {
   display: flex;
   align-items: center;
@@ -243,6 +266,10 @@ body {
   writing-mode: vertical-rl;
   text-orientation: mixed;
   letter-spacing: 0.08em;
+}
+
+.app-shell.sidebar-collapsed .sidebar-version-link {
+  display: none;
 }
 
 /* ========== 主内容 ========== */
@@ -596,9 +623,8 @@ body {
 
 .quota-source-meta span {
   display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .quota-actions {
@@ -676,11 +702,77 @@ body {
 .badge-delete { background: #fef2f2; color: #dc2626; }
 .badge-disable { background: #fffbeb; color: #d97706; }
 .badge-enable { background: #f0fdf4; color: #16a34a; }
-.badge-cache { background: #eff6ff; color: #2563eb; }
+.badge-cache { background: #eff6ff; color: #2563eb; cursor: help; }
 .badge-live { background: #ecfeff; color: #0f766e; }
 .badge-good { background: #f0fdf4; color: #16a34a; }
 .badge-bad { background: #fef2f2; color: #dc2626; }
 .badge-warn { background: #fffbeb; color: #d97706; }
+.badge-priority { background: #f5f3ff; color: #7c3aed; }
+.badge-disable-reason { background: #fefce8; color: #a16207; font-size: 10px; }
+.priority-row {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 4px;
+  padding: 8px 10px; background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 8px; cursor: grab; transition: box-shadow .15s, transform .15s;
+  user-select: none;
+}
+.priority-row:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.priority-row.dragging { opacity: .45; transform: scale(.97); }
+.priority-row.drag-over { border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(99,102,241,.18); }
+.priority-row .drag-handle {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; color: var(--color-text-secondary);
+  cursor: grab; flex-shrink: 0; font-size: 14px; opacity: .5;
+}
+.priority-row .drag-handle:hover { opacity: 1; }
+.priority-row .priority-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.priority-row .priority-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; color: var(--color-text);
+}
+.priority-row .priority-quota {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--color-text-secondary);
+}
+.priority-row .priority-badge {
+  font-size: 11px; background: #f5f3ff; color: #7c3aed;
+  padding: 2px 8px; border-radius: 10px; flex-shrink: 0;
+}
+.priority-row .priority-plan {
+  font-size: 10px;
+  background: #eef2ff;
+  color: #4f46e5;
+  padding: 2px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.priority-row .btn { padding: 2px 8px; font-size: 12px; flex-shrink: 0; }
+
+.help-tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--color-border); color: var(--color-text-secondary);
+  font-size: 12px; font-weight: 600; cursor: help;
+  user-select: none; position: relative; flex-shrink: 0;
+}
+.help-tip:hover .help-tip-content,
+.help-tip:focus .help-tip-content {
+  display: block;
+}
+.help-tip-content {
+  display: none;
+  position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 8px; padding: 10px 14px;
+  font-size: 12px; line-height: 1.6; color: var(--color-text);
+  white-space: normal; width: 320px; z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  font-weight: 400; cursor: default;
+}
 
 /* ========== 调用队列监控 ========== */
 .monitor-row {

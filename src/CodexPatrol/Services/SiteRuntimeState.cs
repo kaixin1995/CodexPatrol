@@ -29,6 +29,16 @@ internal sealed class SiteRuntimeState
     public ConcurrentDictionary<string, AuthFileItem> Accounts { get; } = new();
 
     /// <summary>
+    /// 账号禁用原因映射（账号名 → 禁用原因），仅运行时状态，不持久化。
+    /// </summary>
+    public ConcurrentDictionary<string, DisableReason> DisableReasons { get; } = new();
+
+    /// <summary>
+    /// 账号优先级配置（账号名 → 优先级数值），数值越小越优先。
+    /// </summary>
+    public ConcurrentDictionary<string, int> AccountPriorities { get; } = new();
+
+    /// <summary>
     /// 操作日志队列。
     /// </summary>
     public ConcurrentQueue<OperationLogEntry> OperationLogs { get; } = new();

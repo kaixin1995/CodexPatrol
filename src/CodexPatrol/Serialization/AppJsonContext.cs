@@ -43,6 +43,7 @@ namespace CodexPatrol.Serialization;
 [JsonSerializable(typeof(ApiCallRequest))]
 [JsonSerializable(typeof(ApiCallResponse))]
 [JsonSerializable(typeof(AuthFilePatchRequest))]
+[JsonSerializable(typeof(AuthFilePriorityPatchRequest))]
 [JsonSerializable(typeof(InspectionDecision))]
 [JsonSerializable(typeof(InspectionRunResult))]
 [JsonSerializable(typeof(CodexQuotaSnapshot))]
@@ -58,4 +59,10 @@ namespace CodexPatrol.Serialization;
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(UsageMonitorStatus))]
 [JsonSerializable(typeof(List<UsageMonitorStatus>))]
+[JsonSerializable(typeof(AccountPriority))]
+[JsonSerializable(typeof(List<AccountPriority>))]
+[JsonSerializable(typeof(AccountPriorityResponse))]
+[JsonSerializable(typeof(List<AccountPriorityResponse>))]
+[JsonSerializable(typeof(PriorityRoutingStatusResponse))]
+[JsonSerializable(typeof(UpdatePriorityRoutingRequest))]
 internal sealed partial class AppJsonContext : JsonSerializerContext;

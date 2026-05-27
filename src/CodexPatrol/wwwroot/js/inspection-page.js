@@ -93,14 +93,17 @@ function renderProgress(progress) {
 function renderFeedback(result) {
   const container = document.getElementById('inspection-feedback');
   const outcomes = result?.actionOutcomes || [];
+  const priorityOutcomes = result?.priorityRoutingOutcomes || [];
 
-  if (!outcomes.length) {
+  if (!outcomes.length && !priorityOutcomes.length) {
     container.innerHTML = '<p>本次没有账号状态变更</p>';
     return;
   }
 
-  container.innerHTML = `
-    <div class="feedback-list">
+  let html = '';
+
+  if (outcomes.length) {
+    html += `<div class="feedback-list">
       ${outcomes.map(outcome => {
         const action = getActionMeta(outcome.action);
         const success = outcome.success !== false;
@@ -114,8 +117,30 @@ function renderFeedback(result) {
           </div>
         `;
       }).join('')}
-    </div>
-  `;
+    </div>`;
+  }
+
+  if (priorityOutcomes.length) {
+    html += `<div style="margin-top:8px;font-size:13px;color:var(--color-text-secondary);font-weight:500">优先级路由调度</div>
+    <div class="feedback-list">
+      ${priorityOutcomes.map(outcome => {
+        const action = getActionMeta(outcome.action);
+        const success = outcome.success !== false;
+        return `
+          <div class="feedback-item ${success ? 'success' : 'error'}">
+            <strong>${escapeHtml(outcome.displayAccount || outcome.fileName || '-')}</strong>
+            <span style="margin-left:8px" class="badge badge-${action.className}">${escapeHtml(action.label)}</span>
+            <span style="margin-left:4px" class="badge badge-priority">优先级路由</span>
+            <div class="hint" style="margin-top:6px; margin-bottom:0; color:${success ? '#166534' : '#991b1b'}">
+              ${escapeHtml(success ? `调度成功：${outcome.fileName}` : `调度失败：${outcome.error || outcome.fileName}`)}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>`;
+  }
+
+  container.innerHTML = html;
 }
 
 async function loadInspectionStatus() {

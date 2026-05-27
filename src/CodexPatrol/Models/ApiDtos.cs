@@ -276,6 +276,18 @@ public sealed class SettingsResponse
     /// </summary>
     [JsonPropertyName("provider")]
     public string Provider { get; set; } = "codex";
+
+    /// <summary>
+    /// 是否启用优先级路由。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 优先级路由最少保持启用的账号数量。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; }
 }
 
 /// <summary>
@@ -426,6 +438,18 @@ public sealed class SaveSettingsRequest
     /// </summary>
     [JsonPropertyName("autoEnableRecovered")]
     public bool AutoEnableRecovered { get; set; }
+
+    /// <summary>
+    /// 是否启用优先级路由。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 优先级路由最少保持启用的账号数量。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; }
 }
 
 /// <summary>
@@ -546,4 +570,82 @@ public sealed class UsageMonitorStatus
     /// </summary>
     [JsonPropertyName("activeAuthIndexCount")]
     public int ActiveAuthIndexCount { get; set; }
+}
+
+/// <summary>
+/// 账号优先级条目。
+/// </summary>
+public sealed class AccountPriorityResponse
+{
+    /// <summary>
+    /// 账号名称。
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// 优先级数值，越小越优先。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; set; }
+}
+
+/// <summary>
+/// 优先级路由状态响应。
+/// </summary>
+public sealed class PriorityRoutingStatusResponse
+{
+    /// <summary>
+    /// 是否启用优先级路由。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 当前激活的账号名列表（优先级路由开启时有效）。
+    /// </summary>
+    [JsonPropertyName("activeAccountNames")]
+    public List<string> ActiveAccountNames { get; set; } = [];
+
+    /// <summary>
+    /// 账号优先级列表。
+    /// </summary>
+    [JsonPropertyName("accountPriorities")]
+    public List<AccountPriorityResponse> AccountPriorities { get; set; } = [];
+
+    /// <summary>
+    /// 最少保持启用的账号数量。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; }
+
+    /// <summary>
+    /// 本地保存成功但 CPA 优先级同步失败时的提示信息。
+    /// </summary>
+    [JsonPropertyName("cpaPrioritySyncWarning")]
+    public string? CpaPrioritySyncWarning { get; set; }
+}
+
+/// <summary>
+/// 更新优先级路由配置的请求体。
+/// </summary>
+public sealed class UpdatePriorityRoutingRequest
+{
+    /// <summary>
+    /// 是否启用优先级路由。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingEnabled")]
+    public bool PriorityRoutingEnabled { get; set; }
+
+    /// <summary>
+    /// 最少保持启用的账号数量。
+    /// </summary>
+    [JsonPropertyName("priorityMinActiveCount")]
+    public int PriorityMinActiveCount { get; set; }
+
+    /// <summary>
+    /// 账号优先级列表。
+    /// </summary>
+    [JsonPropertyName("accountPriorities")]
+    public List<AccountPriorityResponse> AccountPriorities { get; set; } = [];
 }

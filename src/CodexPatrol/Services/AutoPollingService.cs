@@ -38,6 +38,11 @@ public sealed class AutoPollingService : BackgroundService
     private static readonly TimeSpan ResetCheckDelay = TimeSpan.FromMinutes(1);
 
     /// <summary>
+    /// CPA 客户端，用于优先级路由时执行启用/禁用操作。
+    /// </summary>
+    private readonly CpaClient _cpa;
+
+    /// <summary>
     /// 记录达到额度重置检测时间的禁用账号。
     /// </summary>
     private sealed record ReachedQuotaResetCandidate(AuthFileItem Account, DateTime DueAtUtc);
@@ -47,10 +52,12 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     public AutoPollingService(
         InspectionEngine engine,
+        CpaClient cpa,
         RuntimeStore store,
         ILogger<AutoPollingService> logger)
     {
         _engine = engine;
+        _cpa = cpa;
         _store = store;
         _logger = logger;
     }
@@ -116,15 +123,20 @@ public sealed class AutoPollingService : BackgroundService
                         continue;
                     }
 
+                    if (_store.IsPolling(site.SiteId) || _store.GetProgress(site.SiteId).Status == "running")
+                    {
+                        continue;
+                    }
+
+                    if (await TryRefreshScheduledRealQuotasAsync(site.SiteId, site, stoppingToken))
+                    {
+                        continue;
+                    }
+
                     if (!site.AutoPollingEnabled)
                     {
                         _store.SetNextScheduledAt(DateTime.MinValue, site.SiteId);
                         _store.SetNextResetCheckAt(DateTime.MinValue, site.SiteId);
-                        continue;
-                    }
-
-                    if (_store.IsPolling(site.SiteId) || _store.GetProgress(site.SiteId).Status == "running")
-                    {
                         continue;
                     }
 
@@ -171,23 +183,42 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     private async Task WarmupStartupQuotasAsync(string siteId, PatrolSiteSettings settings, List<AuthFileItem> accounts, CancellationToken ct)
     {
-        var enabledAccounts = accounts
-            .Where(account => !account.Disabled)
-            .Take(3)
-            .ToList();
+        List<AuthFileItem> warmupAccounts;
 
-        if (enabledAccounts.Count == 0)
+        // 优先级路由开启时，按优先级顺序选取预热账号（不论是否禁用），否则取启用账号
+        if (settings.PriorityRoutingEnabled)
         {
-            _store.AddOperationLog("quota", "startupWarmup", "system", "启动预热未找到可做真实检测的启用账号", siteId: siteId);
+            var priorities = _store.GetAccountPriorities(siteId);
+            warmupAccounts = priorities.Count > 0
+                ? priorities
+                    .OrderBy(p => p.Priority)
+                    .Select(p => accounts.FirstOrDefault(a =>
+                        string.Equals(a.Name, p.Name, StringComparison.OrdinalIgnoreCase)))
+                    .Where(a => a != null)
+                    .Take(3)
+                    .ToList()!
+                : accounts.Where(a => !a.Disabled).Take(3).ToList();
+        }
+        else
+        {
+            warmupAccounts = accounts
+                .Where(account => !account.Disabled)
+                .Take(3)
+                .ToList();
+        }
+
+        if (warmupAccounts.Count == 0)
+        {
+            _store.AddOperationLog("quota", "startupWarmup", "system", "启动预热未找到可做真实检测的账号", siteId: siteId);
             return;
         }
 
-        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热开始，将对最多 {enabledAccounts.Count} 个启用账号做真实额度检测", siteId: siteId);
+        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热开始，将对最多 {warmupAccounts.Count} 个账号做真实额度检测", siteId: siteId);
 
-        for (var index = 0; index < enabledAccounts.Count; index++)
+        for (var index = 0; index < warmupAccounts.Count; index++)
         {
             ct.ThrowIfCancellationRequested();
-            var account = enabledAccounts[index];
+            var account = warmupAccounts[index];
             var decision = await _engine.InspectAccountAsync(siteId, account, forceRefresh: true, ct: ct);
             var quota = _store.GetQuota(account.Name, siteId);
             var weeklyUsedPercent = quota is null ? null : CodexQuotaParser.GetWeeklyUsedPercent(quota);
@@ -212,7 +243,93 @@ public sealed class AutoPollingService : BackgroundService
             }
         }
 
-        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测结束：已按上限探测 {enabledAccounts.Count} 个启用账号", siteId: siteId);
+        _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测结束：已按上限探测 {warmupAccounts.Count} 个账号", siteId: siteId);
+    }
+
+    /// <summary>
+    /// 对达到分散真实刷新窗口的非例外账号做小批量真实刷新，避免大量账号同时过期。
+    /// </summary>
+    private async Task<bool> TryRefreshScheduledRealQuotasAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct)
+    {
+        var accounts = _store.GetAccounts(siteId);
+        if (accounts.Count == 0)
+        {
+            try
+            {
+                accounts = await _engine.LoadCandidatesAsync(siteId, includeExceptions: true, ct);
+            }
+            catch (Exception ex)
+            {
+                _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"加载账号列表失败：{ex.Message}", "warning", siteId: siteId);
+                _store.AddExceptionLog("quota", "freshnessRefresh", "auto", ex, "加载保鲜真实刷新候选账号异常", level: "warning", siteId: siteId);
+                return false;
+            }
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var exceptions = _store.GetExceptions(siteId);
+        var dueAccounts = accounts
+            .Where(account => !exceptions.Contains(account.Name))
+            .Select(account => new
+            {
+                Account = account,
+                DueAtUtc = QuotaCachePolicy.GetScheduledRealRefreshAt(_store.GetQuota(account.Name, siteId), siteId, account.Name),
+            })
+            .Where(item => !item.DueAtUtc.HasValue || item.DueAtUtc.Value <= nowUtc)
+            .OrderBy(item => item.DueAtUtc ?? DateTime.MinValue)
+            .ThenBy(item => item.Account.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Max(1, settings.ProbeWorkers))
+            .Select(item => item.Account)
+            .ToList();
+
+        if (dueAccounts.Count == 0)
+        {
+            return false;
+        }
+
+        _store.SetPollingState(true, siteId);
+        try
+        {
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"检测到 {dueAccounts.Count} 个账号达到真实真实刷新时间，开始分批真实刷新", siteId: siteId);
+            var decisions = await _engine.InspectAccountsAsync(
+                siteId,
+                dueAccounts,
+                settings.ProbeWorkers,
+                0,
+                0,
+                forceRefresh: true,
+                onProgress: (decision, _, _) =>
+                {
+                    _store.AddOperationLog(
+                        "quota",
+                        "freshnessRefresh",
+                        "auto",
+                        string.IsNullOrWhiteSpace(decision.Error)
+                            ? $"额度保鲜真实刷新完成：{decision.AccountName}"
+                            : $"额度保鲜真实刷新失败：{decision.AccountName}，{decision.Error}",
+                        string.IsNullOrWhiteSpace(decision.Error) ? "info" : "warning",
+                        decision.AccountName,
+                        decision.DisplayAccount,
+                        siteId);
+                    return Task.CompletedTask;
+                },
+                ct: ct);
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"本轮保鲜真实刷新完成，共处理 {decisions.Count} 个账号", siteId: siteId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"保鲜真实刷新失败：{ex.Message}", "warning", siteId: siteId);
+            _store.AddExceptionLog("quota", "freshnessRefresh", "auto", ex, "保鲜真实刷新异常", level: "warning", siteId: siteId);
+            return true;
+        }
+        finally
+        {
+            if (_store.HasSite(siteId))
+            {
+                _store.SetPollingState(false, siteId);
+            }
+        }
     }
 
     /// <summary>
@@ -287,12 +404,12 @@ public sealed class AutoPollingService : BackgroundService
 
             var outcomes = new List<ActionOutcome>();
             var mode = ResolveAutoActionMode(settings.AutoActionMode);
-            var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+            var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, settings.PriorityRoutingEnabled, decisions);
             _store.AddOperationLog(
                 "inspection",
                 "inspection",
                 "auto",
-                $"自动巡检决策汇总：保留 {decisions.Count(decision => decision.Action == InspectionAction.Keep)}，禁用建议 {decisions.Count(decision => decision.Action == InspectionAction.Disable)}，启用建议 {decisions.Count(decision => decision.Action == InspectionAction.Enable)}，删除建议 {decisions.Count(decision => decision.Action == InspectionAction.Delete)}；自动模式 {mode}；自动启用 {(settings.AutoEnableRecovered ? "开启" : "关闭")}；待执行动作 {actionItems.Count} 个",
+                $"自动巡检决策汇总：保留 {decisions.Count(decision => decision.Action == InspectionAction.Keep)}，禁用建议 {decisions.Count(decision => decision.Action == InspectionAction.Disable)}，启用建议 {decisions.Count(decision => decision.Action == InspectionAction.Enable)}，删除建议 {decisions.Count(decision => decision.Action == InspectionAction.Delete)}；自动模式 {mode}；自动启用 {(settings.AutoEnableRecovered ? "开启" : "关闭")}；优先级路由 {(settings.PriorityRoutingEnabled ? "开启" : "关闭")}；待执行动作 {actionItems.Count} 个",
                 siteId: siteId);
 
             if (actionItems.Count > 0)
@@ -354,10 +471,18 @@ public sealed class AutoPollingService : BackgroundService
                 _store.AddOperationLog("inspection", "inspection", "auto", "本轮自动巡检没有可执行的自动动作", siteId: siteId);
             }
 
+            // 无论是否有自动动作，优先级路由开启时都要执行调度
+            var priorityOutcomes = new List<ActionOutcome>();
+            if (settings.PriorityRoutingEnabled)
+            {
+                priorityOutcomes = await ApplyPriorityRoutingAsync(siteId, settings, decisions, ct);
+            }
+
             var runResult = new InspectionRunResult
             {
                 Decisions = decisions,
                 ActionOutcomes = outcomes,
+                PriorityRoutingOutcomes = priorityOutcomes,
                 TotalAccounts = candidates.Count,
                 ProbedCount = decisions.Count,
                 DeleteCount = decisions.Count(decision => decision.Action == InspectionAction.Delete),
@@ -438,13 +563,37 @@ public sealed class AutoPollingService : BackgroundService
                     _store.AddOperationLog("inspection", "inspection", "auto", "检测到额度已恢复，但未开启自动启用已恢复的账号，跳过额外单账号自动动作", siteId: siteId);
                 }
 
+                // 优先级路由开启时，标记恢复账号为 OrderedStandby
+                if (settings.PriorityRoutingEnabled)
+                {
+                    foreach (var decision in decisions.Where(d => d.Action == InspectionAction.Enable || d.DisableReason == DisableReason.OrderedStandby))
+                    {
+                        _store.SetDisableReason(decision.AccountName, DisableReason.OrderedStandby, siteId);
+                    }
+                }
+
+                EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
+                _store.SetNextResetCheckAt(ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc) ?? DateTime.MinValue, siteId);
+                return true;
+            }
+
+            // 优先级路由开启时，不在此处直接启用恢复的账号，由优先级调度统一处理
+            if (settings.PriorityRoutingEnabled)
+            {
+                _store.AddOperationLog("inspection", "inspection", "auto",
+                    "额度重置检测完成，优先级路由开启，恢复账号将由优先级调度统一处理",
+                    siteId: siteId);
+                foreach (var decision in decisions.Where(d => d.Action == InspectionAction.Enable || d.DisableReason == DisableReason.OrderedStandby))
+                {
+                    _store.SetDisableReason(decision.AccountName, DisableReason.OrderedStandby, siteId);
+                }
                 EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
                 _store.SetNextResetCheckAt(ResolveNextResetCheckAt(siteId, settings.UsedPercentThreshold, refreshedNowUtc) ?? DateTime.MinValue, siteId);
                 return true;
             }
 
             var mode = ResolveAutoActionMode(settings.AutoActionMode);
-            var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+            var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, settings.PriorityRoutingEnabled, decisions);
             if (actionItems.Count == 0)
             {
                 EnsureNextInspectionScheduled(siteId, settings, refreshedNowUtc);
@@ -720,6 +869,150 @@ public sealed class AutoPollingService : BackgroundService
     }
 
     /// <summary>
+    /// 优先级路由调度：按优先级从高到低，至少保持 minActiveCount 个可用账号启用，其余标记 OrderedStandby。
+    /// </summary>
+    private async Task<List<ActionOutcome>> ApplyPriorityRoutingAsync(
+        string siteId, PatrolSiteSettings settings,
+        List<InspectionDecision> decisions, CancellationToken ct)
+    {
+        if (!settings.PriorityRoutingEnabled)
+        {
+            return [];
+        }
+
+        var priorities = _store.GetAccountPriorities(siteId);
+        if (priorities.Count == 0)
+        {
+            return [];
+        }
+
+        var minActiveCount = Math.Max(1, settings.PriorityMinActiveCount);
+        var exceptions = _store.GetExceptions(siteId);
+
+        // 按优先级升序找到额度可用的账号，收集至达到 minActiveCount
+        var activeAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var priority in priorities.OrderBy(p => p.Priority))
+        {
+            if (exceptions.Contains(priority.Name))
+            {
+                continue;
+            }
+
+            var account = _store.GetAccount(priority.Name, siteId);
+            if (account == null)
+            {
+                continue;
+            }
+
+            var quota = _store.GetQuota(priority.Name, siteId);
+            var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
+
+            if (!weeklyPercent.HasValue || weeklyPercent.Value < settings.UsedPercentThreshold)
+            {
+                activeAccountNames.Add(priority.Name);
+                if (activeAccountNames.Count >= minActiveCount)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (activeAccountNames.Count == 0)
+        {
+            _store.AddOperationLog("account", "priorityRouting", "auto",
+                "优先级路由：所有配置优先级的账号额度已耗尽", "warning",
+                siteId: siteId);
+        }
+        else if (activeAccountNames.Count < minActiveCount)
+        {
+            _store.AddOperationLog("account", "priorityRouting", "auto",
+                $"优先级路由：仅剩 {activeAccountNames.Count} 个可用账号，不足最少保持数 {minActiveCount}", "warning",
+                siteId: siteId);
+        }
+
+        var outcomes = new List<ActionOutcome>();
+        var accounts = _store.GetAccounts(siteId);
+        foreach (var account in accounts)
+        {
+            var priorityEntry = priorities.FirstOrDefault(
+                p => string.Equals(p.Name, account.Name, StringComparison.OrdinalIgnoreCase));
+            if (priorityEntry == null)
+            {
+                continue;
+            }
+
+            if (activeAccountNames.Contains(account.Name))
+            {
+                if (account.Disabled &&
+                    _store.GetDisableReason(account.Name, siteId) == DisableReason.OrderedStandby)
+                {
+                    try
+                    {
+                        await _cpa.EnableAccountAsync(settings, account.Name, ct);
+                        _store.UpdateAccountDisabledState(account.Name, false, siteId);
+                        _store.ClearDisableReason(account.Name, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）",
+                            siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由恢复启用失败：{account.Name}，{ex.Message}", "error",
+                            siteId: siteId);
+                    }
+                }
+            }
+            else
+            {
+                if (!account.Disabled &&
+                    _store.GetDisableReason(account.Name, siteId) == DisableReason.None)
+                {
+                    try
+                    {
+                        await _cpa.DisableAccountAsync(settings, account.Name, ct);
+                        _store.UpdateAccountDisabledState(account.Name, true, siteId);
+                        _store.SetDisableReason(account.Name, DisableReason.OrderedStandby, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）",
+                            siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由待命禁用失败：{account.Name}，{ex.Message}", "error",
+                            siteId: siteId);
+                    }
+                }
+            }
+        }
+
+        return outcomes;
+    }
+
+    /// <summary>
     /// 将字符串解析为自动动作模式枚举，无效值返回 None。
     /// </summary>
     private static AutoActionMode ResolveAutoActionMode(string value)
@@ -760,7 +1053,7 @@ public sealed class AutoPollingService : BackgroundService
             return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
         }
 
-        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        var refreshedAtText = quota is { RefreshedAt: var refreshedAt } && refreshedAt != DateTime.MinValue ? $"，真实刷新时间 {refreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
         return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 

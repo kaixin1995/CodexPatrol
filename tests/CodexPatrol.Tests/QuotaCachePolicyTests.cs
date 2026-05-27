@@ -119,7 +119,8 @@ public sealed class QuotaCachePolicyTests
         Assert.True(snapshot!.FromCache);
         Assert.Equal("new-display", snapshot.DisplayAccount);
         Assert.True(snapshot.Disabled);
-        Assert.Equal(nowUtc, snapshot.RefreshedAt);
+        Assert.Equal(nowUtc, snapshot.CheckedAt);
+        Assert.Equal(existing.RefreshedAt, snapshot.RefreshedAt);
         Assert.Equal(lastUsageAtUtc, snapshot.LastUsageAt);
         Assert.Contains("命中调用日志缓存", snapshot.CacheReason);
         Assert.Equal(snapshot.CacheReason, reason);
@@ -145,8 +146,25 @@ public sealed class QuotaCachePolicyTests
         Assert.True(reused);
         Assert.NotNull(snapshot);
         Assert.True(snapshot!.FromCache);
+        Assert.Equal(nowUtc, snapshot.CheckedAt);
         Assert.Equal(DateTime.MinValue, snapshot.LastUsageAt);
         Assert.Contains("未发现调用记录", reason);
+    }
+
+    [Fact]
+    public void HasReachedScheduledRealRefreshAt_ShouldUseStableSpreadWindow()
+    {
+        var existing = CreateSnapshot(
+            refreshedAt: new DateTime(2026, 5, 20, 8, 0, 0, DateTimeKind.Utc),
+            resetAtUtc: new DateTime(2026, 5, 21, 8, 0, 0, DateTimeKind.Utc));
+
+        var scheduledAt = QuotaCachePolicy.GetScheduledRealRefreshAt(existing, "default", "account-1");
+
+        Assert.NotNull(scheduledAt);
+        var age = scheduledAt!.Value - existing.RefreshedAt;
+        Assert.InRange(age, TimeSpan.FromHours(8), TimeSpan.FromHours(9).Add(TimeSpan.FromMinutes(50)));
+        Assert.False(QuotaCachePolicy.HasReachedScheduledRealRefreshAt(existing, "default", "account-1", scheduledAt.Value.AddMinutes(-1)));
+        Assert.True(QuotaCachePolicy.HasReachedScheduledRealRefreshAt(existing, "default", "account-1", scheduledAt.Value));
     }
 
     [Fact]
@@ -216,7 +234,8 @@ public sealed class QuotaCachePolicyTests
         Assert.True(skipped);
         Assert.NotNull(snapshot);
         Assert.True(snapshot!.FromCache);
-        Assert.Equal(nowUtc, snapshot.RefreshedAt);
+        Assert.Equal(nowUtc, snapshot.CheckedAt);
+        Assert.Equal(existing.RefreshedAt, snapshot.RefreshedAt);
         Assert.Equal("Free", snapshot.PlanType);
         Assert.Contains("命中禁用免费号跳过", reason);
     }
@@ -253,6 +272,7 @@ public sealed class QuotaCachePolicyTests
             DisplayAccount = "display-1",
             PlanType = planType,
             Disabled = false,
+            CheckedAt = refreshedAt,
             RefreshedAt = refreshedAt,
             StatusCode = 200,
             Success = true,

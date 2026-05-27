@@ -86,7 +86,13 @@ public sealed class CodexQuotaSnapshot
     public List<CodexQuotaWindowSnapshot> Windows { get; set; } = [];
 
     /// <summary>
-    /// 额度数据刷新时间。
+    /// 最近一次检查时间，命中缓存和跳过检查时也会更新。
+    /// </summary>
+    [JsonPropertyName("checkedAt")]
+    public DateTime CheckedAt { get; set; }
+
+    /// <summary>
+    /// 最近一次真实请求刷新时间，仅真实请求成功或失败后更新。
     /// </summary>
     [JsonPropertyName("refreshedAt")]
     public DateTime RefreshedAt { get; set; }
@@ -126,4 +132,10 @@ public sealed class CodexQuotaSnapshot
     /// </summary>
     [JsonPropertyName("lastUsageAt")]
     public DateTime LastUsageAt { get; set; }
+
+    /// <summary>
+    /// 禁用原因，仅优先级路由开启时有效。
+    /// </summary>
+    [JsonPropertyName("disableReason")]
+    public string DisableReason { get; set; } = "";
 }

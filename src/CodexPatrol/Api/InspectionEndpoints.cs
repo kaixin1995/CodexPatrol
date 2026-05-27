@@ -14,7 +14,7 @@ public static class InspectionEndpoints
     public static RouteGroupBuilder MapInspectionApi(this RouteGroupBuilder group)
     {
         // 手动触发一次完整巡检。
-        group.MapPost("/run", async (bool? force, string? siteId, InspectionEngine engine, RuntimeStore store, CancellationToken ct) =>
+        group.MapPost("/run", async (bool? force, string? siteId, InspectionEngine engine, RuntimeStore store, CpaClient cpa, CancellationToken ct) =>
         {
             var resolvedSiteId = store.ResolveSiteId(siteId);
             // 防止并发执行，检查是否已有巡检或轮询任务在运行。
@@ -104,7 +104,7 @@ public static class InspectionEndpoints
                 var outcomes = new List<ActionOutcome>();
                 var mode = ResolveAutoActionMode(settings.AutoActionMode);
                 // 按自动动作模式筛选需要执行的账号。
-                var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, decisions);
+                var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnableRecovered, settings.PriorityRoutingEnabled, decisions);
                 store.AddOperationLog(
                     "inspection",
                     "inspection",
@@ -166,6 +166,16 @@ public static class InspectionEndpoints
 
                 // 汇总巡检结果并写入运行时状态。
                 var runResult = BuildRunResult(candidates.Count, decisions, outcomes, store.GetLastRunStartedAt(resolvedSiteId), DateTime.UtcNow, "completed");
+
+                // 优先级路由调度：无论是否有自动动作，开启时都执行
+                if (settings.PriorityRoutingEnabled)
+                {
+                    store.AddOperationLog("account", "priorityRouting", "manual",
+                        "手动巡检完成，开始执行优先级路由调度", siteId: resolvedSiteId);
+                    var priorityOutcomes = await ApplyPriorityRoutingAsync(store, engine, cpa, settings, resolvedSiteId, decisions, ct);
+                    runResult.PriorityRoutingOutcomes = priorityOutcomes;
+                }
+
                 store.SetLastRun(runResult, resolvedSiteId);
                 store.SetLastRunFinishedAt(runResult.FinishedAt, resolvedSiteId);
                 store.CompleteProgress($"手动巡检完成，共探测 {runResult.ProbedCount} 个账号", resolvedSiteId);
@@ -400,7 +410,7 @@ public static class InspectionEndpoints
             return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
         }
 
-        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        var refreshedAtText = quota is { RefreshedAt: var refreshedAt } && refreshedAt != DateTime.MinValue ? $"，真实刷新时间 {refreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
         return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 
@@ -448,5 +458,124 @@ public static class InspectionEndpoints
             "enable" => "启用",
             _ => action,
         };
+    }
+
+    /// <summary>
+    /// 手动巡检时执行优先级路由调度，逻辑与 AutoPollingService.ApplyPriorityRoutingAsync 一致。
+    /// </summary>
+    private static async Task<List<ActionOutcome>> ApplyPriorityRoutingAsync(
+        RuntimeStore store, InspectionEngine engine, CpaClient cpa,
+        PatrolSiteSettings settings, string siteId,
+        List<InspectionDecision> decisions, CancellationToken ct)
+    {
+        var priorities = store.GetAccountPriorities(siteId);
+        if (priorities.Count == 0)
+        {
+            return [];
+        }
+
+        var minActiveCount = Math.Max(1, settings.PriorityMinActiveCount);
+        var exceptions = store.GetExceptions(siteId);
+
+        var activeAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var priority in priorities.OrderBy(p => p.Priority))
+        {
+            if (exceptions.Contains(priority.Name)) continue;
+
+            var account = store.GetAccount(priority.Name, siteId);
+            if (account == null) continue;
+
+            var quota = store.GetQuota(priority.Name, siteId);
+            var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
+
+            if (!weeklyPercent.HasValue || weeklyPercent.Value < settings.UsedPercentThreshold)
+            {
+                activeAccountNames.Add(priority.Name);
+                if (activeAccountNames.Count >= minActiveCount) break;
+            }
+        }
+
+        if (activeAccountNames.Count == 0)
+        {
+            store.AddOperationLog("account", "priorityRouting", "manual",
+                "优先级路由：所有配置优先级的账号额度已耗尽", "warning", siteId: siteId);
+        }
+        else if (activeAccountNames.Count < minActiveCount)
+        {
+            store.AddOperationLog("account", "priorityRouting", "manual",
+                $"优先级路由：仅剩 {activeAccountNames.Count} 个可用账号，不足最少保持数 {minActiveCount}", "warning", siteId: siteId);
+        }
+
+        var outcomes = new List<ActionOutcome>();
+        var accounts = store.GetAccounts(siteId);
+        foreach (var account in accounts)
+        {
+            var priorityEntry = priorities.FirstOrDefault(
+                p => string.Equals(p.Name, account.Name, StringComparison.OrdinalIgnoreCase));
+            if (priorityEntry == null) continue;
+
+            if (activeAccountNames.Contains(account.Name))
+            {
+                if (account.Disabled && store.GetDisableReason(account.Name, siteId) == DisableReason.OrderedStandby)
+                {
+                    try
+                    {
+                        await cpa.EnableAccountAsync(settings, account.Name, ct);
+                        store.UpdateAccountDisabledState(account.Name, false, siteId);
+                        store.ClearDisableReason(account.Name, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        store.AddOperationLog("account", "priorityRouting", "manual",
+                            $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）", siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        store.AddOperationLog("account", "priorityRouting", "manual",
+                            $"优先级路由恢复启用失败：{account.Name}，{ex.Message}", "error", siteId: siteId);
+                    }
+                }
+            }
+            else
+            {
+                if (!account.Disabled && store.GetDisableReason(account.Name, siteId) == DisableReason.None)
+                {
+                    try
+                    {
+                        await cpa.DisableAccountAsync(settings, account.Name, ct);
+                        store.UpdateAccountDisabledState(account.Name, true, siteId);
+                        store.SetDisableReason(account.Name, DisableReason.OrderedStandby, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        store.AddOperationLog("account", "priorityRouting", "manual",
+                            $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）", siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        store.AddOperationLog("account", "priorityRouting", "manual",
+                            $"优先级路由待命禁用失败：{account.Name}，{ex.Message}", "error", siteId: siteId);
+                    }
+                }
+            }
+        }
+
+        return outcomes;
     }
 }

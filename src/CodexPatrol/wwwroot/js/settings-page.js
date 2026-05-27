@@ -124,6 +124,20 @@ function renderPage() {
               </label>
             </div>
           </div>
+          <hr style="border-color:var(--border-color);margin:16px 0">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-priority-routing">
+                启用优先级路由
+              </label>
+              <div style="color:var(--text-muted);font-size:12px;margin-top:4px">开启后账号按优先级顺序消费，至少保持指定数量的可用账号同时启用。<a href="/priority.html" style="color:var(--color-primary)">前往配置账号排列顺序 →</a></div>
+            </div>
+            <div class="form-group">
+              <label>最少保持启用数</label>
+              <input type="number" id="set-priority-min-active" min="1" max="10" value="2">
+            </div>
+          </div>
         </div>
 
         <button type="submit" class="btn btn-primary" id="btn-settings-save">保存设置</button>
@@ -161,6 +175,8 @@ function fillForm(settings) {
   document.getElementById('set-auto-action').value = settings.autoActionMode || 'none';
   document.getElementById('set-threshold').value = settings.usedPercentThreshold ?? 100;
   document.getElementById('set-auto-enable').checked = settings.autoEnableRecovered ?? false;
+  document.getElementById('set-priority-routing').checked = settings.priorityRoutingEnabled ?? false;
+  document.getElementById('set-priority-min-active').value = settings.priorityMinActiveCount ?? 2;
   document.getElementById('btn-settings-save').textContent = '保存设置';
   syncSiteSelect(currentSiteId);
   updateDeleteButtonState();
@@ -186,6 +202,8 @@ function resetFormForCreate() {
   document.getElementById('set-auto-action').value = 'none';
   document.getElementById('set-threshold').value = 100;
   document.getElementById('set-auto-enable').checked = false;
+  document.getElementById('set-priority-routing').checked = false;
+  document.getElementById('set-priority-min-active').value = 2;
   document.getElementById('btn-settings-save').textContent = '创建站点';
   updateDeleteButtonState();
   setActiveTab('site');
@@ -245,6 +263,8 @@ function buildPayload() {
     autoActionMode: document.getElementById('set-auto-action').value,
     usedPercentThreshold: Number(document.getElementById('set-threshold').value),
     autoEnableRecovered: document.getElementById('set-auto-enable').checked,
+    priorityRoutingEnabled: document.getElementById('set-priority-routing').checked,
+    priorityMinActiveCount: Number(document.getElementById('set-priority-min-active').value),
   };
 }
 
@@ -307,6 +327,7 @@ async function saveSettings(event) {
     document.getElementById('set-mgmt-key').value = '';
     setSelectedSiteId(currentSiteId);
     await loadSiteCatalog(currentSiteId);
+
     await loadSettings(currentSiteId);
     showToast('设置已保存', 'success');
   } catch (error) {
