@@ -176,6 +176,12 @@ public sealed class InspectionRunResult
     public List<ActionOutcome> ActionOutcomes { get; set; } = [];
 
     /// <summary>
+    /// 优先级路由调度结果列表。
+    /// </summary>
+    [JsonPropertyName("priorityRoutingOutcomes")]
+    public List<ActionOutcome> PriorityRoutingOutcomes { get; set; } = [];
+
+    /// <summary>
     /// 参与巡检的总账号数。
     /// </summary>
     [JsonPropertyName("totalAccounts")]

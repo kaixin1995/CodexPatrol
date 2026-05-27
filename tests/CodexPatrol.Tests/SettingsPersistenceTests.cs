@@ -712,8 +712,9 @@ public sealed class SettingsPersistenceTests
             await InvokePollSiteAsync(monitor, "default");
 
             var logs = store.GetOperationLogs(200, "default");
-            Assert.Contains(logs, item => item.Category == "monitor" && item.Message.Contains("本轮未获取到新的 usage-queue 记录"));
-            Assert.Contains(logs, item => item.Category == "monitor" && item.Message.Contains("本轮拉取 0 条 usage-queue 记录"));
+            // 空队列不再输出日志，只应有监控激活日志
+            Assert.DoesNotContain(logs, item => item.Category == "monitor" && item.Message.Contains("本轮拉取 0 条 usage-queue 记录"));
+            Assert.DoesNotContain(logs, item => item.Category == "monitor" && item.Message.Contains("本轮未获取到新的 usage-queue 记录"));
         }
         finally
         {

@@ -364,12 +364,6 @@ public sealed class AutoPollingService : BackgroundService
                     },
                     ct);
 
-                // 优先级路由调度：在自动动作执行完成后统一处理账号启用/禁用顺序
-                if (settings.PriorityRoutingEnabled)
-                {
-                    await ApplyPriorityRoutingAsync(siteId, settings, decisions, ct);
-                }
-
                 try
                 {
                     var files = await _engine.LoadCandidatesAsync(siteId, includeExceptions: true, ct);
@@ -386,10 +380,18 @@ public sealed class AutoPollingService : BackgroundService
                 _store.AddOperationLog("inspection", "inspection", "auto", "本轮自动巡检没有可执行的自动动作", siteId: siteId);
             }
 
+            // 无论是否有自动动作，优先级路由开启时都要执行调度
+            var priorityOutcomes = new List<ActionOutcome>();
+            if (settings.PriorityRoutingEnabled)
+            {
+                priorityOutcomes = await ApplyPriorityRoutingAsync(siteId, settings, decisions, ct);
+            }
+
             var runResult = new InspectionRunResult
             {
                 Decisions = decisions,
                 ActionOutcomes = outcomes,
+                PriorityRoutingOutcomes = priorityOutcomes,
                 TotalAccounts = candidates.Count,
                 ProbedCount = decisions.Count,
                 DeleteCount = decisions.Count(decision => decision.Action == InspectionAction.Delete),
@@ -778,19 +780,19 @@ public sealed class AutoPollingService : BackgroundService
     /// <summary>
     /// 优先级路由调度：按优先级从高到低，至少保持 minActiveCount 个可用账号启用，其余标记 OrderedStandby。
     /// </summary>
-    private async Task ApplyPriorityRoutingAsync(
+    private async Task<List<ActionOutcome>> ApplyPriorityRoutingAsync(
         string siteId, PatrolSiteSettings settings,
         List<InspectionDecision> decisions, CancellationToken ct)
     {
         if (!settings.PriorityRoutingEnabled)
         {
-            return;
+            return [];
         }
 
         var priorities = _store.GetAccountPriorities(siteId);
         if (priorities.Count == 0)
         {
-            return;
+            return [];
         }
 
         var minActiveCount = Math.Max(1, settings.PriorityMinActiveCount);
@@ -814,7 +816,6 @@ public sealed class AutoPollingService : BackgroundService
             var quota = _store.GetQuota(priority.Name, siteId);
             var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
 
-            // 额度可用（未超阈值或无额度数据）→ 加入激活列表
             if (!weeklyPercent.HasValue || weeklyPercent.Value < settings.UsedPercentThreshold)
             {
                 activeAccountNames.Add(priority.Name);
@@ -825,7 +826,6 @@ public sealed class AutoPollingService : BackgroundService
             }
         }
 
-        // 全部耗尽
         if (activeAccountNames.Count == 0)
         {
             _store.AddOperationLog("account", "priorityRouting", "auto",
@@ -839,13 +839,12 @@ public sealed class AutoPollingService : BackgroundService
                 siteId: siteId);
         }
 
-        // 遍历有优先级配置的账号，按激活列表决定启用/禁用
+        var outcomes = new List<ActionOutcome>();
         var accounts = _store.GetAccounts(siteId);
         foreach (var account in accounts)
         {
             var priorityEntry = priorities.FirstOrDefault(
                 p => string.Equals(p.Name, account.Name, StringComparison.OrdinalIgnoreCase));
-            // 没有配置优先级的账号不受优先级路由影响
             if (priorityEntry == null)
             {
                 continue;
@@ -853,33 +852,73 @@ public sealed class AutoPollingService : BackgroundService
 
             if (activeAccountNames.Contains(account.Name))
             {
-                // 应激活的账号 → 如果被优先级路由禁用了（OrderedStandby），恢复启用
                 if (account.Disabled &&
                     _store.GetDisableReason(account.Name, siteId) == DisableReason.OrderedStandby)
                 {
-                    await _cpa.EnableAccountAsync(settings, account.Name, ct);
-                    _store.UpdateAccountDisabledState(account.Name, false, siteId);
-                    _store.ClearDisableReason(account.Name, siteId);
-                    _store.AddOperationLog("account", "priorityRouting", "auto",
-                        $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）",
-                        siteId: siteId);
+                    try
+                    {
+                        await _cpa.EnableAccountAsync(settings, account.Name, ct);
+                        _store.UpdateAccountDisabledState(account.Name, false, siteId);
+                        _store.ClearDisableReason(account.Name, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）",
+                            siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "enable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由恢复启用失败：{account.Name}，{ex.Message}", "error",
+                            siteId: siteId);
+                    }
                 }
             }
             else
             {
-                // 非激活账号 → 如果正在启用且无禁用原因，禁用并标记 OrderedStandby
                 if (!account.Disabled &&
                     _store.GetDisableReason(account.Name, siteId) == DisableReason.None)
                 {
-                    await _cpa.DisableAccountAsync(settings, account.Name, ct);
-                    _store.UpdateAccountDisabledState(account.Name, true, siteId);
-                    _store.SetDisableReason(account.Name, DisableReason.OrderedStandby, siteId);
-                    _store.AddOperationLog("account", "priorityRouting", "auto",
-                        $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）",
-                        siteId: siteId);
+                    try
+                    {
+                        await _cpa.DisableAccountAsync(settings, account.Name, ct);
+                        _store.UpdateAccountDisabledState(account.Name, true, siteId);
+                        _store.SetDisableReason(account.Name, DisableReason.OrderedStandby, siteId);
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）",
+                            siteId: siteId);
+                    }
+                    catch (Exception ex)
+                    {
+                        outcomes.Add(new ActionOutcome
+                        {
+                            Action = "disable", FileName = account.Name,
+                            DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
+                            Error = ex.Message,
+                        });
+                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                            $"优先级路由待命禁用失败：{account.Name}，{ex.Message}", "error",
+                            siteId: siteId);
+                    }
                 }
             }
         }
+
+        return outcomes;
     }
 
     /// <summary>
