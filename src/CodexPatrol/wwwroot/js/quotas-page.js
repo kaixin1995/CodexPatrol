@@ -117,7 +117,7 @@ function renderAccountCard(account, quota) {
   const disabled = quota?.disabled ?? getAccountDisabled(account);
   const isException = cachedExceptions.has(accountName);
   const sourceBadge = quota?.fromCache
-    ? '<span class="badge badge-cache">缓存</span>'
+    ? `<span class="badge badge-cache" title="${escapeHtml(`缓存依据：${quota.cacheReason || '-'}`)}">缓存</span>`
     : quota?.refreshedAt
       ? '<span class="badge badge-live">实时</span>'
       : '';
@@ -181,8 +181,7 @@ function renderAccountCard(account, quota) {
       <div class="quota-meta">
         <div class="quota-source-meta">
           <span title="${escapeHtml(quota?.checkedAt ? '检查时间：' + formatDate(quota.checkedAt) : '')}">${quota?.checkedAt ? '检查时间：' + formatDate(quota.checkedAt) : ''}</span>
-          <span title="${escapeHtml(quota?.refreshedAt ? '真实刷新时间：' + formatDate(quota.refreshedAt) : '')}">${quota?.refreshedAt ? '真实刷新时间：' + formatDate(quota.refreshedAt) : ''}</span>
-          ${quota?.fromCache ? `<span title="${escapeHtml(`缓存依据：${quota.cacheReason || '-'}`)}">缓存依据：${escapeHtml(quota.cacheReason || '-')}</span>` : ''}
+          <span title="${escapeHtml(quota?.refreshedAt ? '真实刷新：' + formatDate(quota.refreshedAt) : '')}">${quota?.refreshedAt ? '真实刷新：' + formatDate(quota.refreshedAt) : ''}</span>
         </div>
         <div class="quota-actions">
           <button class="btn btn-sm" data-action="refresh-single" data-account-name="${escapeHtml(accountName)}">刷新额度</button>

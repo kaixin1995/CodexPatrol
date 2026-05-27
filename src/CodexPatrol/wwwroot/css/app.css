@@ -623,9 +623,8 @@ body {
 
 .quota-source-meta span {
   display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .quota-actions {
@@ -703,7 +702,7 @@ body {
 .badge-delete { background: #fef2f2; color: #dc2626; }
 .badge-disable { background: #fffbeb; color: #d97706; }
 .badge-enable { background: #f0fdf4; color: #16a34a; }
-.badge-cache { background: #eff6ff; color: #2563eb; }
+.badge-cache { background: #eff6ff; color: #2563eb; cursor: help; }
 .badge-live { background: #ecfeff; color: #0f766e; }
 .badge-good { background: #f0fdf4; color: #16a34a; }
 .badge-bad { background: #fef2f2; color: #dc2626; }
