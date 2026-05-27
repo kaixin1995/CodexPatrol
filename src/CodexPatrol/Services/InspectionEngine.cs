@@ -216,6 +216,13 @@ public sealed class InspectionEngine
 
         var existingQuota = _store.GetQuota(file.Name, resolvedSiteId);
 
+        // 命中账号级分散真实刷新窗口后强制走真实请求，保证每个非例外账号最多 10 小时至少真实检测一次。
+        if (QuotaCachePolicy.HasReachedScheduledRealRefreshAt(existingQuota, resolvedSiteId, file.Name, nowUtc))
+        {
+            decision = null;
+            return false;
+        }
+
         // 已禁用的免费账号，如果周额度未重置则跳过本轮检查。
         if (QuotaCachePolicy.TrySkipDisabledFreeQuota(
             existingQuota,
@@ -587,6 +594,8 @@ public sealed class InspectionEngine
         var isQuotaReached = CodexQuotaParser.IsQuotaReached(quota);
         var weeklyOverThreshold = weeklyPercent.HasValue && weeklyPercent.Value >= threshold;
         var fiveHourOverThreshold = fiveHourPercent.HasValue && fiveHourPercent.Value >= threshold;
+        var isFreePlan = string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
+        var paidFiveHourOverThreshold = !isFreePlan && fiveHourOverThreshold;
 
         // 获取优先级路由状态
         var priorityRoutingEnabled = siteId != null && _store.GetSettings(siteId).PriorityRoutingEnabled;
@@ -625,28 +634,42 @@ public sealed class InspectionEngine
                     DisableReason.QuotaExhausted);
             }
 
-            // 周额度可用且账号已禁用
+            // 收费号任一限额到阈值都需要禁用；5 小时限额恢复后再按常规恢复链路重新启用。
+            if (paidFiveHourOverThreshold)
+            {
+                if (file.Disabled)
+                {
+                    return BuildDecision(file, InspectionAction.Keep,
+                        "5 小时额度达到阈值，但账号已禁用", statusCode, fiveHourPercent, true,
+                        DisableReason.QuotaExhausted);
+                }
+                return BuildDecision(file, InspectionAction.Disable,
+                    "收费号 5 小时额度达到阈值，建议禁用账号", statusCode, fiveHourPercent, true,
+                    DisableReason.QuotaExhausted);
+            }
+
+            // 周额度和 5 小时额度都可用且账号已禁用。
             if (file.Disabled)
             {
                 if (priorityRoutingEnabled)
                 {
-                    // 优先级路由开启时不直接启用，由优先级调度统一处理
+                    // 优先级路由开启时不直接启用，由优先级调度统一处理。
                     return BuildDecision(file, InspectionAction.Keep,
-                        "周额度可用，但优先级路由开启，等待优先级调度", statusCode, weeklyPercent, false,
+                        "额度可用，但优先级路由开启，等待优先级调度", statusCode, weeklyPercent, false,
                         DisableReason.OrderedStandby);
                 }
 
                 return BuildDecision(file, InspectionAction.Enable,
-                    fiveHourOverThreshold
-                        ? "5 小时额度达到阈值，但周额度仍可用，建议立即启用账号"
-                        : "周额度仍可用，建议立即启用账号",
+                    isFreePlan
+                        ? "周额度仍可用，建议立即启用账号"
+                        : "周额度和 5 小时额度均可用，建议立即启用账号",
                     statusCode, weeklyPercent, false);
             }
 
             if (fiveHourOverThreshold)
             {
                 return BuildDecision(file, InspectionAction.Keep,
-                    "5 小时额度达到阈值，但周额度仍可用，暂不禁用账号",
+                    "5 小时额度达到阈值，但免费号仅按周额度处理，暂不禁用账号",
                     statusCode, weeklyPercent, false);
             }
 

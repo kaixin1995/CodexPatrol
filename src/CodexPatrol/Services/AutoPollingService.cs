@@ -123,15 +123,20 @@ public sealed class AutoPollingService : BackgroundService
                         continue;
                     }
 
+                    if (_store.IsPolling(site.SiteId) || _store.GetProgress(site.SiteId).Status == "running")
+                    {
+                        continue;
+                    }
+
+                    if (await TryRefreshScheduledRealQuotasAsync(site.SiteId, site, stoppingToken))
+                    {
+                        continue;
+                    }
+
                     if (!site.AutoPollingEnabled)
                     {
                         _store.SetNextScheduledAt(DateTime.MinValue, site.SiteId);
                         _store.SetNextResetCheckAt(DateTime.MinValue, site.SiteId);
-                        continue;
-                    }
-
-                    if (_store.IsPolling(site.SiteId) || _store.GetProgress(site.SiteId).Status == "running")
-                    {
                         continue;
                     }
 
@@ -239,6 +244,92 @@ public sealed class AutoPollingService : BackgroundService
         }
 
         _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测结束：已按上限探测 {warmupAccounts.Count} 个账号", siteId: siteId);
+    }
+
+    /// <summary>
+    /// 对达到分散真实刷新窗口的非例外账号做小批量真实刷新，避免大量账号同时过期。
+    /// </summary>
+    private async Task<bool> TryRefreshScheduledRealQuotasAsync(string siteId, PatrolSiteSettings settings, CancellationToken ct)
+    {
+        var accounts = _store.GetAccounts(siteId);
+        if (accounts.Count == 0)
+        {
+            try
+            {
+                accounts = await _engine.LoadCandidatesAsync(siteId, includeExceptions: true, ct);
+            }
+            catch (Exception ex)
+            {
+                _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"加载账号列表失败：{ex.Message}", "warning", siteId: siteId);
+                _store.AddExceptionLog("quota", "freshnessRefresh", "auto", ex, "加载保鲜真实刷新候选账号异常", level: "warning", siteId: siteId);
+                return false;
+            }
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var exceptions = _store.GetExceptions(siteId);
+        var dueAccounts = accounts
+            .Where(account => !exceptions.Contains(account.Name))
+            .Select(account => new
+            {
+                Account = account,
+                DueAtUtc = QuotaCachePolicy.GetScheduledRealRefreshAt(_store.GetQuota(account.Name, siteId), siteId, account.Name),
+            })
+            .Where(item => !item.DueAtUtc.HasValue || item.DueAtUtc.Value <= nowUtc)
+            .OrderBy(item => item.DueAtUtc ?? DateTime.MinValue)
+            .ThenBy(item => item.Account.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Max(1, settings.ProbeWorkers))
+            .Select(item => item.Account)
+            .ToList();
+
+        if (dueAccounts.Count == 0)
+        {
+            return false;
+        }
+
+        _store.SetPollingState(true, siteId);
+        try
+        {
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"检测到 {dueAccounts.Count} 个账号达到真实刷新时间，开始分批真实刷新", siteId: siteId);
+            var decisions = await _engine.InspectAccountsAsync(
+                siteId,
+                dueAccounts,
+                settings.ProbeWorkers,
+                0,
+                0,
+                forceRefresh: true,
+                onProgress: (decision, _, _) =>
+                {
+                    _store.AddOperationLog(
+                        "quota",
+                        "freshnessRefresh",
+                        "auto",
+                        string.IsNullOrWhiteSpace(decision.Error)
+                            ? $"额度保鲜真实刷新完成：{decision.AccountName}"
+                            : $"额度保鲜真实刷新失败：{decision.AccountName}，{decision.Error}",
+                        string.IsNullOrWhiteSpace(decision.Error) ? "info" : "warning",
+                        decision.AccountName,
+                        decision.DisplayAccount,
+                        siteId);
+                    return Task.CompletedTask;
+                },
+                ct: ct);
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"本轮保鲜真实刷新完成，共处理 {decisions.Count} 个账号", siteId: siteId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"保鲜真实刷新失败：{ex.Message}", "warning", siteId: siteId);
+            _store.AddExceptionLog("quota", "freshnessRefresh", "auto", ex, "保鲜真实刷新异常", level: "warning", siteId: siteId);
+            return true;
+        }
+        finally
+        {
+            if (_store.HasSite(siteId))
+            {
+                _store.SetPollingState(false, siteId);
+            }
+        }
     }
 
     /// <summary>

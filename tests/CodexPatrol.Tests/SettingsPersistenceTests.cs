@@ -458,6 +458,245 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public async Task InspectAccountAsync_ShouldRealRequest_WhenScheduledRealRefreshWindowReached()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var legacyDefaults = BuildLegacyDefaults();
+            var store = CreateStore(baseDirectory, legacyDefaults);
+            var account = BuildAccount("account-a", "user-a@example.com");
+            store.SetAccounts([account], "default");
+
+            var staleQuota = BuildQuota("account-a", "user-a@example.com", DateTime.UtcNow.AddHours(-10).AddMinutes(-5));
+            staleQuota.FromCache = false;
+            store.SetQuota("account-a", staleQuota, "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 40,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 3600
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null);
+            var quota = store.GetQuota("account-a", "default");
+
+            Assert.Equal(1, handler.RequestCount);
+            Assert.NotNull(quota);
+            Assert.False(quota!.FromCache);
+            Assert.Equal(200, decision.StatusCode);
+            Assert.True(quota.RefreshedAt > staleQuota.RefreshedAt);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task InspectAccountAsync_ShouldDisablePaidAccount_WhenFiveHourQuotaReachedEvenIfWeeklyAvailable()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var legacyDefaults = BuildLegacyDefaults();
+            var store = CreateStore(baseDirectory, legacyDefaults);
+            var account = BuildAccount("account-paid", "paid@example.com");
+            store.SetAccounts([account], "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "pro",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 100,
+                              "limit_window_seconds": 18000,
+                              "reset_after_seconds": 3600
+                            },
+                            "secondary_window": {
+                              "used_percent": 60,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 86400
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null, forceRefresh: true);
+
+            Assert.Equal(InspectionAction.Disable, decision.Action);
+            Assert.Equal(DisableReason.QuotaExhausted, decision.DisableReason);
+            Assert.Contains("5 小时额度达到阈值", decision.Reason);
+            Assert.Equal(100, decision.UsedPercent);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task InspectAccountAsync_ShouldKeepPaidAccountDisabled_WhenFiveHourQuotaStillReached()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var legacyDefaults = BuildLegacyDefaults();
+            var store = CreateStore(baseDirectory, legacyDefaults);
+            var account = BuildAccount("account-paid", "paid@example.com", disabled: true);
+            store.SetAccounts([account], "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "pro",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 100,
+                              "limit_window_seconds": 18000,
+                              "reset_after_seconds": 3600
+                            },
+                            "secondary_window": {
+                              "used_percent": 60,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 86400
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null, forceRefresh: true);
+
+            Assert.Equal(InspectionAction.Keep, decision.Action);
+            Assert.Equal(DisableReason.QuotaExhausted, decision.DisableReason);
+            Assert.Contains("5 小时额度达到阈值，但账号已禁用", decision.Reason);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task InspectAccountAsync_ShouldEnablePaidAccount_WhenFiveHourQuotaRecoveredAndWeeklyAvailable()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var legacyDefaults = BuildLegacyDefaults();
+            var store = CreateStore(baseDirectory, legacyDefaults);
+            var account = BuildAccount("account-paid", "paid@example.com", disabled: true);
+            store.SetAccounts([account], "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "pro",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 20,
+                              "limit_window_seconds": 18000,
+                              "reset_after_seconds": 3600
+                            },
+                            "secondary_window": {
+                              "used_percent": 60,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 86400
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null, forceRefresh: true);
+
+            Assert.Equal(InspectionAction.Enable, decision.Action);
+            Assert.Equal(DisableReason.None, decision.DisableReason);
+            Assert.Contains("周额度和 5 小时额度均可用", decision.Reason);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
     public async Task InspectAccountAsync_ShouldRealRequest_WhenMonitorActiveAndHasUsage()
     {
         var baseDirectory = CreateTempDirectory();
@@ -1214,6 +1453,71 @@ public sealed class SettingsPersistenceTests
         }
     }
 
+    [Fact]
+    public async Task TryRefreshScheduledRealQuotasAsync_ShouldSkipExceptionAccounts()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts(
+            [
+                BuildAccount("normal-account", "normal@example.com"),
+                BuildAccount("exception-account", "exception@example.com"),
+            ], "default");
+
+            var staleAt = DateTime.UtcNow.AddHours(-10).AddMinutes(-5);
+            store.SetQuota("normal-account", BuildQuota("normal-account", "normal@example.com", staleAt), "default");
+            store.SetQuota("exception-account", BuildQuota("exception-account", "exception@example.com", staleAt), "default");
+            store.AddException("exception-account", "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 35,
+                              "limit_window_seconds": 604800,
+                              "reset_after_seconds": 3600
+                            },
+                            "limit_reached": false,
+                            "allowed": true
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            var refreshed = await InvokeTryRefreshScheduledRealQuotasAsync(service, "default", store.GetSettings(), CancellationToken.None);
+
+            Assert.True(refreshed);
+            Assert.Equal(1, handler.RequestCount);
+            Assert.True(store.GetQuota("normal-account", "default")!.RefreshedAt > staleAt);
+            Assert.Equal(staleAt, store.GetQuota("exception-account", "default")!.RefreshedAt);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
     private static HttpResponseMessage JsonResponse(ApiCallResponse response)
     {
         var json = JsonSerializer.Serialize(new
@@ -1265,6 +1569,17 @@ public sealed class SettingsPersistenceTests
         Assert.NotNull(method);
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, accounts, cancellationToken]));
         await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用后台保鲜真实刷新逻辑，验证 10 小时真实刷新约束。
+    /// </summary>
+    private static async Task<bool> InvokeTryRefreshScheduledRealQuotasAsync(AutoPollingService service, string siteId, PatrolSiteSettings settings, CancellationToken cancellationToken)
+    {
+        var method = typeof(AutoPollingService).GetMethod("TryRefreshScheduledRealQuotasAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = Assert.IsType<Task<bool>>(method!.Invoke(service, [siteId, settings, cancellationToken]));
+        return await task;
     }
 
     /// <summary>
