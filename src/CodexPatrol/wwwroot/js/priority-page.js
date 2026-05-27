@@ -16,6 +16,10 @@ function formatUsedPercent(value) {
   return Number.isFinite(value) ? `${value.toFixed(1)}%` : '--';
 }
 
+function normalizeNameKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function buildPriorityQuotaText(quota) {
   if (!quota) {
     return '暂无额度';
@@ -98,10 +102,10 @@ async function loadPriorityData() {
   if (savedPriorities.length > 0) {
     // 已有配置：使用保存的顺序，补充新增账号到末尾
     priorityEntries = savedPriorities.map(p => ({ name: p.name, priority: p.priority }));
-    const existingNames = new Set(priorityEntries.map(e => e.name.toLowerCase()));
+    const existingNames = new Set(priorityEntries.map(e => normalizeNameKey(e.name)));
     let nextPriority = priorityEntries.length;
     for (const a of cachedAccounts) {
-      if (!existingNames.has(a.name.toLowerCase())) {
+      if (!existingNames.has(normalizeNameKey(a.name))) {
         nextPriority++;
         priorityEntries.push({ name: a.name, priority: nextPriority });
       }
@@ -127,13 +131,14 @@ function renderPriorityList() {
 
   const accountMap = {};
   const quotaMap = {};
-  cachedAccounts.forEach(a => { accountMap[a.name] = a; });
-  cachedQuotas.forEach(q => { quotaMap[q.accountName] = q; });
+  cachedAccounts.forEach(a => { accountMap[normalizeNameKey(a.name)] = a; });
+  cachedQuotas.forEach(q => { quotaMap[normalizeNameKey(q.accountName)] = q; });
 
   let html = '';
   priorityEntries.forEach((entry, index) => {
-    const account = accountMap[entry.name];
-    const quota = quotaMap[entry.name];
+    const lookupKey = normalizeNameKey(entry.name);
+    const account = accountMap[lookupKey];
+    const quota = quotaMap[lookupKey];
     const displayName = account
       ? (getDisplayAccount(account, quota) || account.account || account.email || account.label || account.name)
       : entry.name;
@@ -215,7 +220,7 @@ async function savePriorityConfig() {
       priority: index + 1,
     }));
 
-    await api(`/api/settings/priority-routing?siteId=${encodeURIComponent(currentSiteId)}`, {
+    const data = await api(`/api/settings/priority-routing?siteId=${encodeURIComponent(currentSiteId)}`, {
       method: 'PUT',
       body: JSON.stringify({
         priorityRoutingEnabled: enabled,
@@ -224,9 +229,19 @@ async function savePriorityConfig() {
       }),
     });
 
-    priorityRoutingEnabled = enabled;
-    priorityMinActiveCount = minActive;
-    showToast('优先级路由配置已保存', 'success');
+    priorityRoutingEnabled = data?.priorityRoutingEnabled ?? enabled;
+    priorityMinActiveCount = data?.priorityMinActiveCount ?? minActive;
+    priorityEntries = (data?.accountPriorities || entries).map((entry, index) => ({
+      name: entry.name,
+      priority: entry.priority ?? (index + 1),
+    }));
+    renderPriorityList();
+
+    if (data?.cpaPrioritySyncWarning) {
+      showToast(data.cpaPrioritySyncWarning, 'warning');
+    } else {
+      showToast('优先级路由配置已保存', 'success');
+    }
   } catch (error) {
     showToast(error.message, 'error');
   } finally {

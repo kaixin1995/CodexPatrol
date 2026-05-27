@@ -673,6 +673,17 @@ flowchart TD
 - `sites[].settings.priorityRoutingEnabled`：开关
 - `sites[].settings.priorityMinActiveCount`：最少保持启用数（1-10，默认 2）
 
+### 与 CPA 优先级同步
+
+保存 `/api/settings/priority-routing` 后，服务端会在本地保存完成后继续同步 CPA 的账号优先级：
+
+- 先调用 `GET /v0/management/auth-files` 读取 CPA 当前账号及其 `priority`
+- 按账号名做大小写不敏感匹配，发现 CPA 重名账号或本地账号缺失时停止远端同步
+- 本地优先级是“数值越小越优先”，CPA 是“数值越大越优先”，因此会按当前排序映射成 `N..1`
+- 仅对优先级有变化的账号调用 `PATCH /v0/management/auth-files/fields`
+- PATCH 请求体只包含 `name` 和 `priority`，不会写入 `disabled` 或 `status`
+- 若 CPA 同步失败，本地配置不回滚，接口通过 `cpaPrioritySyncWarning` 返回告警，前端提示用户
+
 ### 核心调度逻辑（`AutoPollingService.ApplyPriorityRoutingAsync`）
 
 1. 按优先级升序遍历账号，跳过例外账号
@@ -711,7 +722,7 @@ flowchart TD
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/settings/priority-routing` | 获取优先级路由配置 |
-| PUT | `/api/settings/priority-routing` | 更新配置（开关 + 最小启用数 + 排序） |
+| PUT | `/api/settings/priority-routing` | 更新配置（开关 + 最小启用数 + 排序），并在保存后增量同步 CPA `priority` |
 
 ---
 

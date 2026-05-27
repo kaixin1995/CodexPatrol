@@ -73,6 +73,7 @@
 | 例外账号 | 不参与巡检候选、不参与优先级路由调度、不参与 10 小时保鲜真实刷新 |
 | 时间字段 | `CheckedAt` = 最近检查时间；`RefreshedAt` = 最近真实刷新时间 |
 | 真实刷新保鲜 | 非例外账号最长 10 小时一次真实请求，并分散到 8 小时 ~ 9 小时 50 分窗口 |
+| 保存后同步 CPA | 保存优先级配置后会立即增量同步 CPA `priority`，只改顺序不改 `disabled`；失败只告警，不回滚本地配置 |
 
 ---
 
@@ -786,9 +787,19 @@ private async Task WarmupStartupQuotasAsync(
 }
 ```
 
-响应体：同 `PriorityRoutingStatusResponse`。
+响应体：同 `PriorityRoutingStatusResponse`，当前实现额外可能返回 `cpaPrioritySyncWarning`，用于提示“本地已保存但 CPA 优先级同步失败”。
+
+当前实现中，`PUT /api/settings/priority-routing` 在本地保存成功后还会：
+
+- 调用 `GET /v0/management/auth-files` 读取 CPA 当前账号和 `priority`
+- 按账号名大小写不敏感匹配本地顺序与 CPA 账号
+- 将本地“越小越优先”的顺序换算为 CPA“越大越优先”的 `N..1` 数值
+- 仅对发生变化的账号调用 `PATCH /v0/management/auth-files/fields`
+- PATCH 只发送 `name` + `priority`，不写 `disabled` / `status`
+- 如遇 CPA 重名账号、账号缺失或远端请求失败，则停止远端同步并返回告警，不回滚本地配置
 
 **校验规则**：
+
 - `accountPriorities` 中的账号名必须存在于当前站点的账号列表中，不存在的给出警告但忽略
 - `priority` 值必须 ≥ 1，0 或空等同于未配置
 - `priorityMinActiveCount` 必须 ≥ 1 且 ≤ 10，超出范围时 clamp（`RuntimeStore.NormalizeSiteSettings` 中处理）
@@ -866,6 +877,8 @@ public string DisableReason { get; set; } = "";
 | 可用账号不足最少保持数 | account | priorityRouting | `优先级路由：仅剩 N 个可用账号，不足最少保持数 M` |
 | 额度恢复但未轮到 | inspection | inspection | `额度恢复但优先级路由开启，等待优先级调度：pro-1（优先级 3）` |
 | 优先级路由配置更新 | system | settings | `优先级路由配置已更新，共 N 个账号` |
+| CPA 优先级同步成功 | system | priorityRouting | `优先级路由配置已保存，并已同步 CPA 优先级，共更新 N 个账号` |
+| CPA 优先级同步告警 | system | priorityRouting | `本地配置已保存，但同步 CPA 优先级失败：...` |
 | 启动预热按优先级 | quota | startupWarmup | `启动预热按优先级顺序开始，将对最多 3 个账号做真实额度检测` |
 
 ---

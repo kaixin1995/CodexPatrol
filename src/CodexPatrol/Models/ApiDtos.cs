@@ -618,6 +618,12 @@ public sealed class PriorityRoutingStatusResponse
     /// </summary>
     [JsonPropertyName("priorityMinActiveCount")]
     public int PriorityMinActiveCount { get; set; }
+
+    /// <summary>
+    /// 本地保存成功但 CPA 优先级同步失败时的提示信息。
+    /// </summary>
+    [JsonPropertyName("cpaPrioritySyncWarning")]
+    public string? CpaPrioritySyncWarning { get; set; }
 }
 
 /// <summary>

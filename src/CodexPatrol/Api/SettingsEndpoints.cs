@@ -66,18 +66,11 @@ public static class SettingsEndpoints
             var settings = store.GetSettings(resolvedSiteId);
             var priorities = store.GetAccountPriorities(resolvedSiteId);
 
-            return Results.Ok(new PriorityRoutingStatusResponse
-            {
-                PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
-                PriorityMinActiveCount = settings.PriorityMinActiveCount,
-                AccountPriorities = priorities
-                    .Select(p => new AccountPriorityResponse { Name = p.Name, Priority = p.Priority })
-                    .ToList(),
-            });
+            return Results.Ok(BuildPriorityRoutingStatusResponse(settings, priorities));
         });
 
         // 更新优先级路由配置（开关 + 优先级列表）。
-        group.MapPut("/priority-routing", (UpdatePriorityRoutingRequest payload, RuntimeStore store, string? siteId) =>
+        group.MapPut("/priority-routing", async (UpdatePriorityRoutingRequest payload, RuntimeStore store, CpaClient cpa, string? siteId, CancellationToken ct) =>
         {
             var resolvedSiteId = store.ResolveSiteId(siteId);
 
@@ -111,17 +104,140 @@ public static class SettingsEndpoints
                 $"优先级路由配置已更新，共 {priorities.Count} 个账号",
                 siteId: resolvedSiteId);
 
-            return Results.Ok(new PriorityRoutingStatusResponse
-            {
-                PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
-                PriorityMinActiveCount = settings.PriorityMinActiveCount,
-                AccountPriorities = priorities
-                    .Select(p => new AccountPriorityResponse { Name = p.Name, Priority = p.Priority })
-                    .ToList(),
-            });
+            var cpaPrioritySyncWarning = await TrySyncCpaPrioritiesAsync(store, cpa, settings, priorities, resolvedSiteId, ct);
+
+            return Results.Ok(BuildPriorityRoutingStatusResponse(settings, priorities, cpaPrioritySyncWarning));
         });
 
         return group;
+    }
+
+    /// <summary>
+    /// 构造优先级路由状态响应。
+    /// </summary>
+    private static PriorityRoutingStatusResponse BuildPriorityRoutingStatusResponse(
+        PatrolSiteSettings settings,
+        List<AccountPriority> priorities,
+        string? cpaPrioritySyncWarning = null)
+    {
+        return new PriorityRoutingStatusResponse
+        {
+            PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
+            PriorityMinActiveCount = settings.PriorityMinActiveCount,
+            CpaPrioritySyncWarning = cpaPrioritySyncWarning,
+            AccountPriorities = priorities
+                .Select(p => new AccountPriorityResponse { Name = p.Name, Priority = p.Priority })
+                .ToList(),
+        };
+    }
+
+    /// <summary>
+    /// 将本地优先级顺序安全地增量同步到 CPA。
+    /// </summary>
+    private static async Task<string?> TrySyncCpaPrioritiesAsync(
+        RuntimeStore store,
+        CpaClient cpa,
+        PatrolSiteSettings settings,
+        List<AccountPriority> priorities,
+        string siteId,
+        CancellationToken ct)
+    {
+        if (priorities.Count == 0)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.CpaBaseUrl))
+        {
+            return LogCpaPrioritySyncWarning(store, siteId, "本地配置已保存，但未配置 CPA 地址，无法同步远端优先级");
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.ManagementKey))
+        {
+            return LogCpaPrioritySyncWarning(store, siteId, "本地配置已保存，但未配置 ManagementKey，无法同步 CPA 优先级");
+        }
+
+        try
+        {
+            var remoteGroups = (await cpa.GetAuthFilesAsync(settings, ct)).Files
+                .Where(file => !string.IsNullOrWhiteSpace(file.Name))
+                .GroupBy(file => file.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var duplicateRemoteGroup = remoteGroups.FirstOrDefault(group => group.Count() > 1);
+            if (duplicateRemoteGroup is not null)
+            {
+                return LogCpaPrioritySyncWarning(store, siteId,
+                    $"本地配置已保存，但 CPA 存在重名账号 {duplicateRemoteGroup.Key}，已停止优先级同步");
+            }
+
+            var remoteByName = remoteGroups.ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var orderedPriorities = priorities
+                .Where(priority => !string.IsNullOrWhiteSpace(priority.Name))
+                .OrderBy(priority => priority.Priority)
+                .ThenBy(priority => priority.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var missingNames = orderedPriorities
+                .Where(priority => !remoteByName.ContainsKey(priority.Name))
+                .Select(priority => priority.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (missingNames.Count > 0)
+            {
+                return LogCpaPrioritySyncWarning(store, siteId,
+                    $"本地配置已保存，但以下账号未在 CPA 中找到，已停止优先级同步：{string.Join("、", missingNames)}");
+            }
+
+            var updates = new List<AuthFilePriorityPatchRequest>();
+            for (var index = 0; index < orderedPriorities.Count; index++)
+            {
+                var localPriority = orderedPriorities[index];
+                var remote = remoteByName[localPriority.Name];
+                var desiredPriority = orderedPriorities.Count - index;
+                if (remote.Priority == desiredPriority)
+                {
+                    continue;
+                }
+
+                updates.Add(new AuthFilePriorityPatchRequest
+                {
+                    Name = remote.Name,
+                    Priority = desiredPriority,
+                });
+            }
+
+            if (updates.Count == 0)
+            {
+                store.AddOperationLog("system", "priorityRouting", "system",
+                    "优先级路由配置已保存，CPA 优先级无需变更",
+                    siteId: siteId);
+                return null;
+            }
+
+            foreach (var update in updates)
+            {
+                await cpa.UpdateAccountPriorityAsync(settings, update.Name, update.Priority, ct);
+            }
+
+            store.AddOperationLog("system", "priorityRouting", "system",
+                $"优先级路由配置已保存，并已同步 CPA 优先级，共更新 {updates.Count} 个账号",
+                siteId: siteId);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return LogCpaPrioritySyncWarning(store, siteId, $"本地配置已保存，但同步 CPA 优先级失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 记录 CPA 优先级同步告警并返回提示文本。
+    /// </summary>
+    private static string LogCpaPrioritySyncWarning(RuntimeStore store, string siteId, string message)
+    {
+        store.AddOperationLog("system", "priorityRouting", "system", message, "warning", siteId: siteId);
+        return message;
     }
 
     /// <summary>

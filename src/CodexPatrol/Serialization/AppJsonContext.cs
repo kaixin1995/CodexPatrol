@@ -43,6 +43,7 @@ namespace CodexPatrol.Serialization;
 [JsonSerializable(typeof(ApiCallRequest))]
 [JsonSerializable(typeof(ApiCallResponse))]
 [JsonSerializable(typeof(AuthFilePatchRequest))]
+[JsonSerializable(typeof(AuthFilePriorityPatchRequest))]
 [JsonSerializable(typeof(InspectionDecision))]
 [JsonSerializable(typeof(InspectionRunResult))]
 [JsonSerializable(typeof(CodexQuotaSnapshot))]

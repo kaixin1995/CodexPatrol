@@ -123,6 +123,23 @@ public sealed class CpaClient
     }
 
     /// <summary>
+    /// 通过 PATCH 接口修改账号优先级。
+    /// </summary>
+    public async Task UpdateAccountPriorityAsync(PatrolSiteSettings site, string name, int priority, CancellationToken ct = default)
+    {
+        var payload = new AuthFilePriorityPatchRequest { Name = name, Priority = priority };
+        using var req = new HttpRequestMessage(HttpMethod.Patch, ApiUrl(site, "/auth-files/fields"));
+        ApplyAuth(req, site);
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(payload, AppJsonContext.Default.AuthFilePriorityPatchRequest),
+            Encoding.UTF8,
+            "application/json");
+
+        using var resp = await SendAsync(req, site, ct);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
     /// 删除指定账号。
     /// </summary>
     public async Task DeleteAccountAsync(PatrolSiteSettings site, string name, CancellationToken ct = default)

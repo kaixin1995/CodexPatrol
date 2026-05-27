@@ -57,6 +57,12 @@ public sealed class AuthFileItem
     public string? Label { get; set; }
 
     /// <summary>
+    /// CPA 侧账号优先级，数值越大优先级越高。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; set; }
+
+    /// <summary>
     /// 是否已禁用。
     /// </summary>
     [JsonPropertyName("disabled")]

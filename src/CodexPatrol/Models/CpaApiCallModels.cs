@@ -99,6 +99,24 @@ public sealed class AuthFilePatchRequest
 }
 
 /// <summary>
+/// CPA auth-files fields PATCH 请求体。
+/// </summary>
+public sealed class AuthFilePriorityPatchRequest
+{
+    /// <summary>
+    /// 认证文件名称。
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// CPA 侧优先级，数值越大优先级越高。
+    /// </summary>
+    [JsonPropertyName("priority")]
+    public int Priority { get; set; }
+}
+
+/// <summary>
 /// 执行结果
 /// </summary>
 public sealed class ActionOutcome

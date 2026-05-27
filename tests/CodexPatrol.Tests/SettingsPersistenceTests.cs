@@ -1011,6 +1011,88 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public async Task GetAuthFilesAsync_ShouldParsePriorityField()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get && request.RequestUri?.AbsolutePath == "/v0/management/auth-files")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "files": [
+                        {
+                          "name": "account-a",
+                          "priority": 10,
+                          "disabled": false
+                        }
+                      ],
+                      "total": 1
+                    }
+                    """, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+            };
+        });
+
+        var cpa = new CpaClient(new HttpClient(handler));
+        var response = await cpa.GetAuthFilesAsync(new PatrolSiteSettings
+        {
+            CpaBaseUrl = "http://test-host",
+            ManagementKey = "test-key",
+            TimeoutMs = 5000,
+        });
+
+        var file = Assert.Single(response.Files);
+        Assert.Equal("account-a", file.Name);
+        Assert.Equal(10, file.Priority);
+    }
+
+    [Fact]
+    public async Task UpdateAccountPriorityAsync_ShouldPatchPriorityOnly()
+    {
+        string? requestBody = null;
+
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Patch && request.RequestUri?.AbsolutePath == "/v0/management/auth-files/fields")
+            {
+                requestBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+            };
+        });
+
+        var cpa = new CpaClient(new HttpClient(handler));
+        await cpa.UpdateAccountPriorityAsync(new PatrolSiteSettings
+        {
+            CpaBaseUrl = "http://test-host",
+            ManagementKey = "test-key",
+            TimeoutMs = 5000,
+        }, "account-a", 7);
+
+        Assert.Equal(1, handler.RequestCount);
+        Assert.NotNull(requestBody);
+
+        using var document = JsonDocument.Parse(requestBody!);
+        Assert.Equal("account-a", document.RootElement.GetProperty("name").GetString());
+        Assert.Equal(7, document.RootElement.GetProperty("priority").GetInt32());
+        Assert.False(document.RootElement.TryGetProperty("disabled", out _));
+    }
+
+    [Fact]
     public void NextScheduledAt_And_NextResetCheckAt_ShouldBeStoredSeparately()
     {
         var baseDirectory = CreateTempDirectory();
