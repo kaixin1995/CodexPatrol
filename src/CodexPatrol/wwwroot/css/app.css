@@ -141,6 +141,29 @@ body {
   font-weight: 800;
 }
 
+.sidebar-version-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.sidebar-version-link svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+.sidebar-version-link:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
 .nav-link {
   display: flex;
   align-items: center;
@@ -243,6 +266,10 @@ body {
   writing-mode: vertical-rl;
   text-orientation: mixed;
   letter-spacing: 0.08em;
+}
+
+.app-shell.sidebar-collapsed .sidebar-version-link {
+  display: none;
 }
 
 /* ========== 主内容 ========== */
