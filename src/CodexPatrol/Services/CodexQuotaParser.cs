@@ -176,13 +176,15 @@ public static class CodexQuotaParser
         int statusCode,
         string rawBody)
     {
+        var nowUtc = DateTime.UtcNow;
         var snapshot = new CodexQuotaSnapshot
         {
             AccountName = accountName,
             DisplayAccount = displayAccount,
             Disabled = disabled,
             StatusCode = statusCode,
-            RefreshedAt = DateTime.UtcNow,
+            CheckedAt = nowUtc,
+            RefreshedAt = nowUtc,
             Success = statusCode is >= 200 and < 300,
         };
 

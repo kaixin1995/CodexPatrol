@@ -110,7 +110,7 @@ public static class QuotaCachePolicy
         }
 
         // 全部条件满足，克隆快照并标记缓存原因。
-        snapshot = CloneQuota(existing, displayAccount, disabled, lastUsageAtUtc, lastUsageAtUtc.HasValue
+        snapshot = CloneQuota(existing, displayAccount, disabled, nowUtc, lastUsageAtUtc, lastUsageAtUtc.HasValue
             ? "命中调用日志缓存：上次刷新后无新调用，且未到额度重置时间"
             : "命中调用日志缓存：未发现调用记录，且未到额度重置时间");
         reason = snapshot.CacheReason;
@@ -178,6 +178,7 @@ public static class QuotaCachePolicy
             existing,
             displayAccount,
             disabled,
+            nowUtc,
             existing.LastUsageAt == DateTime.MinValue ? null : existing.LastUsageAt,
             "命中禁用免费号跳过：周额度未重置，保持禁用");
         reason = snapshot.CacheReason;
@@ -191,6 +192,7 @@ public static class QuotaCachePolicy
         CodexQuotaSnapshot existing,
         string displayAccount,
         bool disabled,
+        DateTime checkedAtUtc,
         DateTime? lastUsageAtUtc,
         string cacheReason)
     {
@@ -200,6 +202,7 @@ public static class QuotaCachePolicy
             DisplayAccount = displayAccount,
             PlanType = existing.PlanType,
             Disabled = disabled,
+            CheckedAt = checkedAtUtc,
             RefreshedAt = existing.RefreshedAt,
             StatusCode = existing.StatusCode,
             Success = existing.Success,

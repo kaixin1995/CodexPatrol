@@ -180,7 +180,8 @@ function renderAccountCard(account, quota) {
       <div>${windowsHtml}</div>
       <div class="quota-meta">
         <div class="quota-source-meta">
-          <span title="${escapeHtml(quota?.refreshedAt ? '刷新时间：' + formatDate(quota.refreshedAt) : '')}">${quota?.refreshedAt ? '刷新时间：' + formatDate(quota.refreshedAt) : ''}</span>
+          <span title="${escapeHtml(quota?.checkedAt ? '检查时间：' + formatDate(quota.checkedAt) : '')}">${quota?.checkedAt ? '检查时间：' + formatDate(quota.checkedAt) : ''}</span>
+          <span title="${escapeHtml(quota?.refreshedAt ? '真实刷新时间：' + formatDate(quota.refreshedAt) : '')}">${quota?.refreshedAt ? '真实刷新时间：' + formatDate(quota.refreshedAt) : ''}</span>
           ${quota?.fromCache ? `<span title="${escapeHtml(`缓存依据：${quota.cacheReason || '-'}`)}">缓存依据：${escapeHtml(quota.cacheReason || '-')}</span>` : ''}
         </div>
         <div class="quota-actions">

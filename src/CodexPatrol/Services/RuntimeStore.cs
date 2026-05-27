@@ -1380,6 +1380,7 @@ public sealed class RuntimeStore
             AccountName = file.Name,
             DisplayAccount = ResolveDisplayAccount(file),
             Disabled = file.Disabled,
+            CheckedAt = DateTime.MinValue,
             RefreshedAt = DateTime.MinValue,
             LastUsageAt = DateTime.MinValue,
         };
@@ -1392,6 +1393,7 @@ public sealed class RuntimeStore
     {
         return quota.Success
             || quota.StatusCode != 0
+            || quota.CheckedAt != DateTime.MinValue
             || quota.RefreshedAt != DateTime.MinValue
             || quota.Windows.Count > 0
             || !string.IsNullOrWhiteSpace(quota.ErrorMessage);
@@ -1431,6 +1433,7 @@ public sealed class RuntimeStore
             DisplayAccount = quota.DisplayAccount,
             PlanType = quota.PlanType,
             Disabled = quota.Disabled,
+            CheckedAt = quota.CheckedAt,
             RefreshedAt = quota.RefreshedAt,
             StatusCode = quota.StatusCode,
             Success = quota.Success,
@@ -1461,6 +1464,7 @@ public sealed class RuntimeStore
             DisplayAccount = quota.DisplayAccount,
             PlanType = quota.PlanType,
             Disabled = quota.Disabled,
+            CheckedAt = quota.CheckedAt,
             RefreshedAt = quota.RefreshedAt,
             StatusCode = quota.StatusCode,
             Success = quota.Success,

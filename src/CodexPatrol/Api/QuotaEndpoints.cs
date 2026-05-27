@@ -176,7 +176,7 @@ public static class QuotaEndpoints
             return $"额度刷新完成：{mode}（{cacheReason}）";
         }
 
-        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        var refreshedAtText = quota is { RefreshedAt: var refreshedAt } && refreshedAt != DateTime.MinValue ? $"，真实刷新时间 {refreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
         return $"额度刷新完成：真实请求{refreshedAtText}";
     }
 }

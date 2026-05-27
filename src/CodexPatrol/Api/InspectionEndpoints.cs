@@ -410,7 +410,7 @@ public static class InspectionEndpoints
             return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
         }
 
-        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        var refreshedAtText = quota is { RefreshedAt: var refreshedAt } && refreshedAt != DateTime.MinValue ? $"，真实刷新时间 {refreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
         return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 

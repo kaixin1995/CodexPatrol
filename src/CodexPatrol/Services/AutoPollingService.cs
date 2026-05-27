@@ -290,7 +290,7 @@ public sealed class AutoPollingService : BackgroundService
         _store.SetPollingState(true, siteId);
         try
         {
-            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"检测到 {dueAccounts.Count} 个账号达到真实刷新时间，开始分批真实刷新", siteId: siteId);
+            _store.AddOperationLog("quota", "freshnessRefresh", "auto", $"检测到 {dueAccounts.Count} 个账号达到真实真实刷新时间，开始分批真实刷新", siteId: siteId);
             var decisions = await _engine.InspectAccountsAsync(
                 siteId,
                 dueAccounts,
@@ -1053,7 +1053,7 @@ public sealed class AutoPollingService : BackgroundService
             return $"探测完成（{mode}）：{cacheReason}；建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
         }
 
-        var refreshedAtText = quota?.RefreshedAt != DateTime.MinValue ? $"，刷新时间 {quota.RefreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
+        var refreshedAtText = quota is { RefreshedAt: var refreshedAt } && refreshedAt != DateTime.MinValue ? $"，真实刷新时间 {refreshedAt:yyyy-MM-dd HH:mm:ss} UTC" : "";
         return $"探测完成（真实请求{refreshedAtText}），建议{ResolveDecisionLabel(decision.Action)}：{decision.Reason}";
     }
 

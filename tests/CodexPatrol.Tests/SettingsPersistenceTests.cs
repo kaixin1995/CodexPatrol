@@ -310,8 +310,8 @@ public sealed class SettingsPersistenceTests
 
             store.SetAccounts([BuildAccount("account-a", "user-a@example.com")], "default");
             store.SetAccounts([BuildAccount("account-b", "user-b@example.com")], backup.SiteId);
-            store.SetQuota("account-a", BuildQuota("account-a", "user-a@example.com", refreshedAt: new DateTime(2026, 5, 22, 1, 0, 0, DateTimeKind.Utc)), "default");
-            store.SetQuota("account-b", BuildQuota("account-b", "user-b@example.com", refreshedAt: new DateTime(2026, 5, 22, 2, 0, 0, DateTimeKind.Utc)), backup.SiteId);
+            store.SetQuota("account-a", BuildQuota("account-a", "user-a@example.com", refreshedAt: new DateTime(2026, 5, 22, 1, 0, 0, DateTimeKind.Utc), checkedAt: new DateTime(2026, 5, 22, 1, 30, 0, DateTimeKind.Utc)), "default");
+            store.SetQuota("account-b", BuildQuota("account-b", "user-b@example.com", refreshedAt: new DateTime(2026, 5, 22, 2, 0, 0, DateTimeKind.Utc), checkedAt: new DateTime(2026, 5, 22, 2, 20, 0, DateTimeKind.Utc)), backup.SiteId);
 
             var reloaded = CreateStore(baseDirectory, BuildLegacyDefaults());
             var defaultQuota = reloaded.GetQuota("account-a", "default");
@@ -319,8 +319,10 @@ public sealed class SettingsPersistenceTests
 
             Assert.NotNull(defaultQuota);
             Assert.NotNull(backupQuota);
-            Assert.Equal(new DateTime(2026, 5, 22, 1, 0, 0, DateTimeKind.Utc), defaultQuota!.RefreshedAt);
-            Assert.Equal(new DateTime(2026, 5, 22, 2, 0, 0, DateTimeKind.Utc), backupQuota!.RefreshedAt);
+            Assert.Equal(new DateTime(2026, 5, 22, 1, 30, 0, DateTimeKind.Utc), defaultQuota!.CheckedAt);
+            Assert.Equal(new DateTime(2026, 5, 22, 1, 0, 0, DateTimeKind.Utc), defaultQuota.RefreshedAt);
+            Assert.Equal(new DateTime(2026, 5, 22, 2, 20, 0, DateTimeKind.Utc), backupQuota!.CheckedAt);
+            Assert.Equal(new DateTime(2026, 5, 22, 2, 0, 0, DateTimeKind.Utc), backupQuota.RefreshedAt);
             Assert.Null(reloaded.GetQuota("account-b", "default"));
             Assert.Null(reloaded.GetQuota("account-a", backup.SiteId));
         }
@@ -357,7 +359,8 @@ public sealed class SettingsPersistenceTests
             Assert.NotNull(reloaded.GetQuota("account-a", "default"));
             Assert.Null(reloaded.GetQuota("account-b", "default"));
             Assert.NotNull(placeholderQuota);
-            Assert.Equal(DateTime.MinValue, placeholderQuota!.RefreshedAt);
+            Assert.Equal(DateTime.MinValue, placeholderQuota!.CheckedAt);
+            Assert.Equal(DateTime.MinValue, placeholderQuota.RefreshedAt);
             Assert.DoesNotContain(reloaded.GetQuotas("default"), item => item.AccountName == "account-c");
         }
         finally
@@ -828,7 +831,7 @@ public sealed class SettingsPersistenceTests
         };
     }
 
-    private static CodexQuotaSnapshot BuildQuota(string accountName, string displayAccount, DateTime refreshedAt, double usedPercent = 80, bool disabled = false)
+    private static CodexQuotaSnapshot BuildQuota(string accountName, string displayAccount, DateTime refreshedAt, double usedPercent = 80, bool disabled = false, DateTime? checkedAt = null)
     {
         return new CodexQuotaSnapshot
         {
@@ -836,6 +839,7 @@ public sealed class SettingsPersistenceTests
             DisplayAccount = displayAccount,
             PlanType = "Free",
             Disabled = disabled,
+            CheckedAt = checkedAt ?? refreshedAt,
             RefreshedAt = refreshedAt,
             StatusCode = 200,
             Success = true,
@@ -1076,6 +1080,7 @@ public sealed class SettingsPersistenceTests
         var realQuota = new CodexQuotaSnapshot
         {
             AccountName = "account-a",
+            CheckedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
             RefreshedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
             FromCache = false,
             CacheReason = "",
@@ -1084,7 +1089,8 @@ public sealed class SettingsPersistenceTests
         var reusedQuota = new CodexQuotaSnapshot
         {
             AccountName = "account-b",
-            RefreshedAt = new DateTime(2026, 5, 23, 8, 5, 0, DateTimeKind.Utc),
+            CheckedAt = new DateTime(2026, 5, 23, 8, 5, 0, DateTimeKind.Utc),
+            RefreshedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
             FromCache = true,
             CacheReason = "命中调用日志缓存：上次刷新后无新调用，且未到额度重置时间",
         };
@@ -1092,7 +1098,8 @@ public sealed class SettingsPersistenceTests
         var skippedQuota = new CodexQuotaSnapshot
         {
             AccountName = "account-c",
-            RefreshedAt = new DateTime(2026, 5, 23, 8, 10, 0, DateTimeKind.Utc),
+            CheckedAt = new DateTime(2026, 5, 23, 8, 10, 0, DateTimeKind.Utc),
+            RefreshedAt = new DateTime(2026, 5, 23, 8, 0, 0, DateTimeKind.Utc),
             FromCache = true,
             CacheReason = "命中禁用免费号跳过：周额度未重置，保持禁用",
         };
@@ -1159,6 +1166,7 @@ public sealed class SettingsPersistenceTests
 
             cachedQuota.FromCache = false;
             cachedQuota.CacheReason = "";
+            cachedQuota.CheckedAt = new DateTime(2026, 5, 23, 9, 15, 0, DateTimeKind.Utc);
             cachedQuota.RefreshedAt = new DateTime(2026, 5, 23, 9, 15, 0, DateTimeKind.Utc);
             store.SetQuota("account-a", cachedQuota, "default");
 
@@ -1173,7 +1181,7 @@ public sealed class SettingsPersistenceTests
             Assert.Contains("命中调用日志缓存", cachedMessage);
             Assert.Contains("探测完成（跳过检查）", skippedMessage);
             Assert.Contains("命中禁用免费号跳过", skippedMessage);
-            Assert.Contains("探测完成（真实请求，刷新时间 2026-05-23 09:15:00 UTC）", realMessage);
+            Assert.Contains("探测完成（真实请求，真实刷新时间 2026-05-23 09:15:00 UTC）", realMessage);
         }
         finally
         {
@@ -1208,6 +1216,7 @@ public sealed class SettingsPersistenceTests
 
             quota.FromCache = false;
             quota.CacheReason = "";
+            quota.CheckedAt = new DateTime(2026, 5, 23, 10, 5, 0, DateTimeKind.Utc);
             quota.RefreshedAt = new DateTime(2026, 5, 23, 10, 5, 0, DateTimeKind.Utc);
             store.SetQuota("account-a", quota, "default");
 
@@ -1218,7 +1227,7 @@ public sealed class SettingsPersistenceTests
 
             Assert.Equal("额度刷新失败：请求超时", failureMessage);
             Assert.Contains("额度刷新完成：跳过检查（命中禁用免费号跳过：周额度未重置，保持禁用）", skippedMessage);
-            Assert.Equal("额度刷新完成：真实请求，刷新时间 2026-05-23 10:05:00 UTC", realMessage);
+            Assert.Equal("额度刷新完成：真实请求，真实刷新时间 2026-05-23 10:05:00 UTC", realMessage);
         }
         finally
         {
