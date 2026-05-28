@@ -471,6 +471,25 @@ public sealed class AutoPollingService : BackgroundService
                 _store.AddOperationLog("inspection", "inspection", "auto", "本轮自动巡检没有可执行的自动动作", siteId: siteId);
             }
 
+            if (settings.PriorityRoutingEnabled
+                && _store.TryAutoReorderAccountPriorities(
+                    decisions.Select(decision => decision.AccountName).ToList(),
+                    settings.UsedPercentThreshold,
+                    out var reorderedPriorities,
+                    siteId))
+            {
+                _store.AddOperationLog("priority", "priorityRouting", "auto",
+                    "自动巡检后已按免费号额度和新账号规则自动重排优先级", siteId: siteId);
+                await PriorityRoutingRemoteSync.TrySyncAsync(
+                    _store,
+                    _cpa,
+                    settings,
+                    reorderedPriorities,
+                    siteId,
+                    ct,
+                    "自动巡检后已自动重排优先级");
+            }
+
             // 无论是否有自动动作，优先级路由开启时都要执行调度
             var priorityOutcomes = new List<ActionOutcome>();
             if (settings.PriorityRoutingEnabled)
@@ -893,7 +912,8 @@ public sealed class AutoPollingService : BackgroundService
         var activeAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var priority in priorities.OrderBy(p => p.Priority))
         {
-            if (exceptions.Contains(priority.Name))
+            // 待首检和例外账号都不能提前参与优先级路由。
+            if (priority.PendingFirstInspection || exceptions.Contains(priority.Name))
             {
                 continue;
             }
@@ -907,7 +927,7 @@ public sealed class AutoPollingService : BackgroundService
             var quota = _store.GetQuota(priority.Name, siteId);
             var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
 
-            if (!weeklyPercent.HasValue || weeklyPercent.Value < settings.UsedPercentThreshold)
+            if (weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold)
             {
                 activeAccountNames.Add(priority.Name);
                 if (activeAccountNames.Count >= minActiveCount)
@@ -919,13 +939,13 @@ public sealed class AutoPollingService : BackgroundService
 
         if (activeAccountNames.Count == 0)
         {
-            _store.AddOperationLog("account", "priorityRouting", "auto",
+            _store.AddOperationLog("priority", "priorityRouting", "auto",
                 "优先级路由：所有配置优先级的账号额度已耗尽", "warning",
                 siteId: siteId);
         }
         else if (activeAccountNames.Count < minActiveCount)
         {
-            _store.AddOperationLog("account", "priorityRouting", "auto",
+            _store.AddOperationLog("priority", "priorityRouting", "auto",
                 $"优先级路由：仅剩 {activeAccountNames.Count} 个可用账号，不足最少保持数 {minActiveCount}", "warning",
                 siteId: siteId);
         }
@@ -936,7 +956,7 @@ public sealed class AutoPollingService : BackgroundService
         {
             var priorityEntry = priorities.FirstOrDefault(
                 p => string.Equals(p.Name, account.Name, StringComparison.OrdinalIgnoreCase));
-            if (priorityEntry == null)
+            if (priorityEntry == null || exceptions.Contains(account.Name))
             {
                 continue;
             }
@@ -956,7 +976,7 @@ public sealed class AutoPollingService : BackgroundService
                             Action = "enable", FileName = account.Name,
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
                         });
-                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                        _store.AddOperationLog("priority", "priorityRouting", "auto",
                             $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）",
                             siteId: siteId);
                     }
@@ -968,7 +988,7 @@ public sealed class AutoPollingService : BackgroundService
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
                             Error = ex.Message,
                         });
-                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                        _store.AddOperationLog("priority", "priorityRouting", "auto",
                             $"优先级路由恢复启用失败：{account.Name}，{ex.Message}", "error",
                             siteId: siteId);
                     }
@@ -989,7 +1009,7 @@ public sealed class AutoPollingService : BackgroundService
                             Action = "disable", FileName = account.Name,
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
                         });
-                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                        _store.AddOperationLog("priority", "priorityRouting", "auto",
                             $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）",
                             siteId: siteId);
                     }
@@ -1001,7 +1021,7 @@ public sealed class AutoPollingService : BackgroundService
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
                             Error = ex.Message,
                         });
-                        _store.AddOperationLog("account", "priorityRouting", "auto",
+                        _store.AddOperationLog("priority", "priorityRouting", "auto",
                             $"优先级路由待命禁用失败：{account.Name}，{ex.Message}", "error",
                             siteId: siteId);
                     }

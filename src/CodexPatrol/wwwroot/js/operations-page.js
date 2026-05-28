@@ -32,6 +32,7 @@ function renderPage() {
               <option value="inspection">巡检</option>
               <option value="quota">额度刷新</option>
               <option value="account">账号操作</option>
+              <option value="priority">优先级路由</option>
               <option value="monitor">监控</option>
               <option value="system">系统</option>
             </select>
@@ -113,6 +114,8 @@ function resolveCategoryLabel(category) {
       return '账号';
     case 'monitor':
       return '监控';
+    case 'priority':
+      return '优先级';
     case 'system':
       return '系统';
     default:
@@ -134,6 +137,10 @@ function resolveOperationLabel(operationType) {
       return '启动同步';
     case 'usagequeue':
       return '调用队列监控';
+    case 'priorityrouting':
+      return '优先级路由';
+    case 'settings':
+      return '配置更新';
     default:
       return operationType || '-';
   }

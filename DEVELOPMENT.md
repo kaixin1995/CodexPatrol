@@ -661,15 +661,16 @@ flowchart TD
 
 ### 数据模型
 
-- `AccountPriority`（`PatrolSiteSettings.cs`）：账号名 + 优先级序号
+- `AccountPriority`（`PatrolSiteSettings.cs`）：账号名 + 优先级序号 + `PendingFirstInspection`
 - `DisableReason` 枚举（`InspectionDecision.cs`）：`None` / `QuotaExhausted` / `OrderedStandby` / `ManualDisabled` / `ErrorDisabled`
-- `SiteRuntimeState` 新增：`DisableReasons`（ConcurrentDictionary）、`AccountPriorities`（ConcurrentDictionary）
+- `SiteRuntimeState` 新增：`DisableReasons`（ConcurrentDictionary）、`AccountPriorities`（ConcurrentDictionary，值为 `AccountPriority`）
 - 配置入口：设置页面开关 + 独立优先级路由页面（`priority.html` / `priority-page.js`）
 
 ### 持久化
 
 优先级数据存储在 `patrol-config.json`，不引入额外 JSON 文件：
-- `sites[].accountPriorities`：账号优先级列表
+
+- `sites[].accountPriorities`：账号优先级列表（包含 `name` / `priority` / `pendingFirstInspection`）
 - `sites[].settings.priorityRoutingEnabled`：开关
 - `sites[].settings.priorityMinActiveCount`：最少保持启用数（1-10，默认 2）
 
@@ -682,17 +683,30 @@ flowchart TD
 - 本地优先级是“数值越小越优先”，CPA 是“数值越大越优先”，因此会按当前排序映射成 `N..1`
 - 仅对优先级有变化的账号调用 `PATCH /v0/management/auth-files/fields`
 - PATCH 请求体只包含 `name` 和 `priority`，不会写入 `disabled` 或 `status`
+- 会自动跳过例外账号和 `PendingFirstInspection = true` 的待首检账号，避免它们提前影响 CPA 远端选路
 - 若 CPA 同步失败，本地配置不回滚，接口通过 `cpaPrioritySyncWarning` 返回告警，前端提示用户
+
+### 巡检后自动重排
+
+当 `PriorityRoutingEnabled = true` 时，手动巡检和自动巡检结束后会按当前额度结果自动重排本地优先级：
+
+1. 新发现账号会先追加到末尾并标记 `PendingFirstInspection = true`
+2. 待首检账号必须等下一次真实巡检拿到额度后，才会正式纳入自动排序
+3. 免费号按“剩余额度高优先”重排；等价于按周使用率从低到高排序
+4. 新免费号会插入到“最后一个仍未达到阈值的已有免费号”后面
+5. 已达到阈值的免费号会下沉到底部
+6. 收费号不按额度做重新排序
+7. 最终会重新编号为唯一的 `1..N`，不会出现重复优先级
 
 ### 核心调度逻辑（`AutoPollingService.ApplyPriorityRoutingAsync`）
 
-1. 按优先级升序遍历账号，跳过例外账号
-2. 检查每个账号额度是否可用（周使用率 < 阈值）
+1. 按优先级升序遍历账号，跳过例外账号和待首检账号
+2. 仅将已有真实周额度且周使用率低于阈值的账号视为“可用账号”
 3. 收集可用账号直到达到 `minActiveCount`
 4. 对激活列表中的 `OrderedStandby` 账号执行启用（通过 CPA）
 5. 对非激活且无禁用原因的账号执行禁用并标记 `OrderedStandby`
 
-补充说明：优先级路由会跳过例外账号；当前实现会在手动巡检和自动巡检结束后统一执行调度。
+补充说明：优先级路由关闭时，巡检不会自动重排本地顺序，也不会自动同步 CPA 优先级；例外账号不会参与调度，待首检账号也不会提前进入 active 集合。
 
 ### 与巡检引擎的协作（`InspectionEngine.ResolveDecision`）
 
@@ -735,4 +749,4 @@ flowchart TD
 | `AuthServiceTests.cs` | 4 | 密码设置/验证、哈希持久化、会话令牌、篡改检测 |
 | `CpaApiTests.cs` | 7 | CPA 连接、账号列表、额度探测、禁用/启用（集成测试，需真实 CPA） |
 | `QuotaCachePolicyTests.cs` | 8 | auth_index 提取、缓存复用/跳过逻辑、窗口过期判断 |
-| `SettingsPersistenceTests.cs` | 25 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志、优先级路由调度、禁用原因管理、启动预热 |
+| `SettingsPersistenceTests.cs` | 54 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志、优先级路由调度、待首检与自动重排、CPA 优先级同步、禁用原因管理、启动预热 |

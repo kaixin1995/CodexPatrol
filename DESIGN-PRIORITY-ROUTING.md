@@ -796,6 +796,7 @@ private async Task WarmupStartupQuotasAsync(
 - 将本地“越小越优先”的顺序换算为 CPA“越大越优先”的 `N..1` 数值
 - 仅对发生变化的账号调用 `PATCH /v0/management/auth-files/fields`
 - PATCH 只发送 `name` + `priority`，不写 `disabled` / `status`
+- 会自动跳过例外账号和 `PendingFirstInspection = true` 的待首检账号，避免它们提前影响 CPA 远端优先级
 - 如遇 CPA 重名账号、账号缺失或远端请求失败，则停止远端同步并返回告警，不回滚本地配置
 
 **校验规则**：
@@ -907,7 +908,10 @@ public string DisableReason { get; set; } = "";
 | A1 额度恢复（minActiveCount=2） | A1 重新启用，A3 被禁用回到待命（保持 A1+A2 共 2 个） |
 | minActiveCount=1 时 | 只启用最高优先级的 1 个可用账号 |
 | 有账号无优先级配置 | 这些账号不受优先级路由影响 |
+| 待首检账号存在，但尚未完成首检 | 不参与 active 选择，也不参与 CPA 优先级同步 |
+| 例外账号仍保留在优先级列表 | 不参与优先级调度，不会被自动启用/禁用，也不参与 CPA 同步 |
 | 优先级路由开启 + 自动巡检关闭 | 优先级路由可以手动触发巡检后执行调度 |
+| 优先级路由关闭时完成巡检 | 不自动重排本地顺序，也不自动同步 CPA 优先级 |
 | 手动禁用已启用账号 | 标记为 ManualDisabled，不会被优先级路由自动恢复 |
 | 账号不存在于优先级列表 | 不参与优先级调度，但不被禁用 |
 

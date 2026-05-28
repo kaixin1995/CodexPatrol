@@ -34,9 +34,9 @@ internal sealed class SiteRuntimeState
     public ConcurrentDictionary<string, DisableReason> DisableReasons { get; } = new();
 
     /// <summary>
-    /// 账号优先级配置（账号名 → 优先级数值），数值越小越优先。
+    /// 账号优先级配置（账号名 → 优先级条目），数值越小越优先。
     /// </summary>
-    public ConcurrentDictionary<string, int> AccountPriorities { get; } = new();
+    public ConcurrentDictionary<string, AccountPriority> AccountPriorities { get; } = new();
 
     /// <summary>
     /// 操作日志队列。
