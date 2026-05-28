@@ -2197,6 +2197,184 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public async Task ManualPriorityRoutingAsync_ShouldNotReactivatePaidAccountWithFiveHourQuotaExhausted()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("paid-1", "p1@test.com", disabled: true),
+                BuildAccount("free-1", "f1@test.com"),
+            ]);
+
+            var paidQuota = BuildQuota("paid-1", "p1@test.com", DateTime.UtcNow, usedPercent: 30);
+            paidQuota.PlanType = "Pro";
+            paidQuota.Windows.Add(new CodexQuotaWindowSnapshot
+            {
+                Id = "5h",
+                Label = "5小时限额",
+                UsedPercent = 100,
+                LimitWindowSeconds = 18000,
+                ResetAtUtc = DateTime.UtcNow.AddHours(1),
+            });
+            store.SetQuota("paid-1", paidQuota, "default");
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "paid-1", Priority = 1 },
+                new AccountPriority { Name = "free-1", Priority = 2 },
+            ]);
+            store.SetDisableReason("paid-1", DisableReason.QuotaExhausted, "default");
+            store.UpdateSettings(s =>
+            {
+                s.PriorityRoutingEnabled = true;
+                s.PriorityMinActiveCount = 2;
+            });
+
+            var enableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":false"))
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        enableRequests.Add(document.RootElement.GetProperty("name").GetString() ?? "");
+                    }
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+
+            await InvokeManualApplyPriorityRoutingAsync(store, engine, cpa, store.GetSettings(), "default", []);
+
+            // 5 小时额度到阈值的收费号不应被启用
+            Assert.DoesNotContain("paid-1", enableRequests);
+            Assert.Equal(DisableReason.QuotaExhausted, store.GetDisableReason("paid-1", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ManualPriorityRoutingAsync_ShouldReactivateRecoveredQuotaExhaustedAccount()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("free-1", "f1@test.com", disabled: true),
+                BuildAccount("free-2", "f2@test.com"),
+            ]);
+
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+            store.SetQuota("free-2", BuildQuota("free-2", "f2@test.com", DateTime.UtcNow, usedPercent: 40), "default");
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "free-2", Priority = 2 },
+            ]);
+            store.SetDisableReason("free-1", DisableReason.QuotaExhausted, "default");
+            store.UpdateSettings(s =>
+            {
+                s.PriorityRoutingEnabled = true;
+                s.PriorityMinActiveCount = 2;
+            });
+
+            var enableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":false"))
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        enableRequests.Add(document.RootElement.GetProperty("name").GetString() ?? "");
+                    }
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+
+            await InvokeManualApplyPriorityRoutingAsync(store, engine, cpa, store.GetSettings(), "default", []);
+
+            Assert.Contains("free-1", enableRequests);
+            Assert.Equal(DisableReason.None, store.GetDisableReason("free-1", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ManualPriorityRoutingAsync_ShouldReactivateManualDisabledAccount()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts([BuildAccount("free-1", "f1@test.com", disabled: true)]);
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+            store.SetAccountPriorities([new AccountPriority { Name = "free-1", Priority = 1 }]);
+            store.SetDisableReason("free-1", DisableReason.ManualDisabled, "default");
+            store.UpdateSettings(s => s.PriorityRoutingEnabled = true);
+
+            var enableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":false"))
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        enableRequests.Add(document.RootElement.GetProperty("name").GetString() ?? "");
+                    }
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+
+            await InvokeManualApplyPriorityRoutingAsync(store, engine, cpa, store.GetSettings(), "default", []);
+
+            Assert.Contains("free-1", enableRequests);
+            Assert.Equal(DisableReason.None, store.GetDisableReason("free-1", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
     public async Task ApplyPriorityRoutingAsync_ShouldNotActOnAccountsWithoutPriority()
     {
         var baseDirectory = CreateTempDirectory();
@@ -2605,6 +2783,23 @@ public sealed class SettingsPersistenceTests
         var method = typeof(AutoPollingService).GetMethod("RunInspectionAsync", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(method);
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, cancellationToken, false]));
+        await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用手动巡检优先级路由调度逻辑。
+    /// </summary>
+    private static async Task InvokeManualApplyPriorityRoutingAsync(
+        RuntimeStore store,
+        InspectionEngine engine,
+        CpaClient cpa,
+        PatrolSiteSettings settings,
+        string siteId,
+        List<InspectionDecision> decisions)
+    {
+        var method = typeof(InspectionEndpoints).GetMethod("ApplyPriorityRoutingAsync", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task<List<ActionOutcome>>>(method!.Invoke(null, [store, engine, cpa, settings, siteId, decisions, CancellationToken.None]));
         await task;
     }
 

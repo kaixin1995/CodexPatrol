@@ -701,10 +701,10 @@ flowchart TD
 ### 核心调度逻辑（`AutoPollingService.ApplyPriorityRoutingAsync`）
 
 1. 按优先级升序遍历账号，跳过例外账号和待首检账号
-2. 仅将已有真实周额度且周使用率低于阈值的账号视为“可用账号”
+2. 免费号只看周额度，收费号需周额度和 5 小时额度都未达阈值，才算”可用账号”
 3. 收集可用账号直到达到 `minActiveCount`
-4. 对激活列表中的 `OrderedStandby` 账号执行启用（通过 CPA）
-5. 对非激活且无禁用原因的账号执行禁用并标记 `OrderedStandby`
+4. 进入 active 的禁用账号（不在例外名单）统一恢复启用，不区分之前的禁用原因
+5. 未进入 active 且当前启用的账号执行禁用并标记 `OrderedStandby`
 
 补充说明：优先级路由关闭时，巡检不会自动重排本地顺序，也不会自动同步 CPA 优先级；例外账号不会参与调度，待首检账号也不会提前进入 active 集合。
 
@@ -717,10 +717,11 @@ flowchart TD
 
 ### 额度恢复流程
 
-1. 自动巡检发现已禁用账号额度恢复 → 标记 `OrderedStandby`
-2. 等待排在前面的账号额度耗尽被禁用
-3. 下次 `ApplyPriorityRoutingAsync` 执行时，按排列顺序激活下一个 `OrderedStandby` 账号
-4. 恢复的账号不会跳过中间排队的账号，严格按优先级顺序轮转
+1. 自动/手动巡检发现已禁用账号额度恢复 → 巡检引擎标记建议启用，优先级路由开启时交由调度统一处理
+2. 优先级路由按排列顺序从高到低遍历，选 active 集合（免费号只看周额度，收费号周额度和 5 小时额度都不能到阈值）
+3. 进入 active 集合的账号如果当前禁用且不在例外名单，统一恢复启用（不区分之前是 QuotaExhausted / OrderedStandby / ManualDisabled）
+4. 未进入 active 且当前启用的账号，会被置为待命禁用（OrderedStandby）
+5. 恢复的账号不会跳过中间排队的账号，严格按优先级顺序轮转
 
 ### 功能组合场景
 
@@ -749,4 +750,4 @@ flowchart TD
 | `AuthServiceTests.cs` | 4 | 密码设置/验证、哈希持久化、会话令牌、篡改检测 |
 | `CpaApiTests.cs` | 7 | CPA 连接、账号列表、额度探测、禁用/启用（集成测试，需真实 CPA） |
 | `QuotaCachePolicyTests.cs` | 8 | auth_index 提取、缓存复用/跳过逻辑、窗口过期判断 |
-| `SettingsPersistenceTests.cs` | 54 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志、优先级路由调度、待首检与自动重排、CPA 优先级同步、禁用原因管理、启动预热 |
+| `SettingsPersistenceTests.cs` | 54 | 站点配置持久化、例外名单持久化、额度快照持久化、巡检引擎缓存行为、定时计算、队列监控日志、优先级路由调度（含收费号 5 小时额度判定、手动禁用恢复、待首检与例外跳过）、自动重排、CPA 优先级同步、禁用原因管理、启动预热 |

@@ -927,7 +927,14 @@ public sealed class AutoPollingService : BackgroundService
             var quota = _store.GetQuota(priority.Name, siteId);
             var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
 
-            if (weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold)
+            // 收费号需要同时满足周额度和 5 小时额度都未达阈值才能作为 active。
+            var isPaidAccount = quota != null && !string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
+            var paidFiveHourOverThreshold = isPaidAccount
+                && quota!.Windows.Any(w => w.LimitWindowSeconds == 18000 && w.UsedPercent >= settings.UsedPercentThreshold);
+
+            var isUsable = weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold && !paidFiveHourOverThreshold;
+
+            if (isUsable)
             {
                 activeAccountNames.Add(priority.Name);
                 if (activeAccountNames.Count >= minActiveCount)
@@ -963,8 +970,8 @@ public sealed class AutoPollingService : BackgroundService
 
             if (activeAccountNames.Contains(account.Name))
             {
-                if (account.Disabled &&
-                    _store.GetDisableReason(account.Name, siteId) == DisableReason.OrderedStandby)
+                // 只要不在例外名单且进入 active 集合，禁用账号都交给优先级路由统一启用。
+                if (account.Disabled)
                 {
                     try
                     {
