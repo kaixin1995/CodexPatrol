@@ -80,10 +80,23 @@ public class CpaApiTests
 
     private static string ToJson(object obj) => JsonSerializer.Serialize(obj);
 
+    private static bool SkipUnlessEnabled(string testName)
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("ENABLE_LIVE_CPA_TESTS"), "1", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        Console.WriteLine($"[SKIP] {testName} 未运行：如需直连真实 CPA，请显式设置 ENABLE_LIVE_CPA_TESTS=1");
+        return true;
+    }
+
     // ===== 测试 1：验证 CPA 连接 =====
     [Fact]
     public async Task T01_GetConfig_ShouldConnect()
     {
+        if (SkipUnlessEnabled(nameof(T01_GetConfig_ShouldConnect))) return;
+
         using var req = CreateRequest(HttpMethod.Get, "/config");
         using var resp = await Http.SendAsync(req);
 
@@ -98,6 +111,8 @@ public class CpaApiTests
     [Fact]
     public async Task T02_GetAuthFiles_ShouldReturnList()
     {
+        if (SkipUnlessEnabled(nameof(T02_GetAuthFiles_ShouldReturnList))) return;
+
         using var req = CreateRequest(HttpMethod.Get, "/auth-files");
         var root = await SendAndParseAsync(req);
 
@@ -120,6 +135,8 @@ public class CpaApiTests
     [Fact]
     public async Task T03_GetCodexAccounts_ShouldFilter()
     {
+        if (SkipUnlessEnabled(nameof(T03_GetCodexAccounts_ShouldFilter))) return;
+
         using var req = CreateRequest(HttpMethod.Get, "/auth-files");
         var root = await SendAndParseAsync(req);
 
@@ -148,6 +165,8 @@ public class CpaApiTests
     [Fact]
     public async Task T04_ProbeCodexUsage_ShouldReturnData()
     {
+        if (SkipUnlessEnabled(nameof(T04_ProbeCodexUsage_ShouldReturnData))) return;
+
         // 获取一个 codex 账号
         using var listReq = CreateRequest(HttpMethod.Get, "/auth-files");
         var listRoot = await SendAndParseAsync(listReq);
@@ -209,6 +228,8 @@ public class CpaApiTests
     [Fact]
     public async Task T05_DisableAndEnableAccount_ShouldRestore()
     {
+        if (SkipUnlessEnabled(nameof(T05_DisableAndEnableAccount_ShouldRestore))) return;
+
         // 获取一个未禁用的 codex 账号
         using var listReq = CreateRequest(HttpMethod.Get, "/auth-files");
         var listRoot = await SendAndParseAsync(listReq);
@@ -260,6 +281,8 @@ public class CpaApiTests
     [Fact]
     public async Task T06_VerifyAccountRestored()
     {
+        if (SkipUnlessEnabled(nameof(T06_VerifyAccountRestored))) return;
+
         using var req = CreateRequest(HttpMethod.Get, "/auth-files");
         var root = await SendAndParseAsync(req);
 

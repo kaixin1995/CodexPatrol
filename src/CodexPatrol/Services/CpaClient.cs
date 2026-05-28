@@ -151,18 +151,6 @@ public sealed class CpaClient
         resp.EnsureSuccessStatusCode();
     }
 
-    /// <summary>
-    /// 获取原始 usage 数据的 JSON 字符串。
-    /// </summary>
-    public async Task<string> GetUsageRawAsync(PatrolSiteSettings site, CancellationToken ct = default)
-    {
-        using var req = new HttpRequestMessage(HttpMethod.Get, ApiUrl(site, "/usage"));
-        ApplyAuth(req, site);
-
-        using var resp = await SendAsync(req, site, ct);
-        resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadAsStringAsync(ct);
-    }
 
     /// <summary>
     /// 从 CPA usage-queue 拉取调用记录，返回原始 JSON 字符串列表。
