@@ -102,6 +102,11 @@ public sealed class OperationLogFileWriter
             return "Account.log";
         }
 
+        if (category == "priority")
+        {
+            return "Priority.log";
+        }
+
         if (category == "monitor" || operationType == "usagequeue")
         {
             return "UsageQueue.log";

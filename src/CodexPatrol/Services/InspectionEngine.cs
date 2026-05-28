@@ -157,25 +157,6 @@ public sealed class InspectionEngine
             .ToList();
     }
 
-    /// <summary>
-    /// 加载所有账号的最近调用时间映射，用于额度缓存策略判断。
-    /// </summary>
-    public async Task<IReadOnlyDictionary<string, DateTime>?> LoadLastUsageByAuthIndexAsync(string? siteId, CancellationToken ct = default)
-    {
-        var resolvedSiteId = _store.ResolveSiteId(siteId);
-        var settings = _store.GetSettings(resolvedSiteId);
-
-        try
-        {
-            var usageJson = await _cpa.GetUsageRawAsync(settings, ct);
-            return UsageActivityAnalyzer.BuildLastUsageByAuthIndex(usageJson);
-        }
-        catch (Exception ex)
-        {
-            _store.AddExceptionLog("quota", "usageActivity", "engine", ex, "读取使用记录异常", level: "warning", siteId: resolvedSiteId);
-            return null;
-        }
-    }
 
     /// <summary>
     /// 尝试在发起真实请求前直接给出探测结果；命中缓存或无需请求时立即返回 true。

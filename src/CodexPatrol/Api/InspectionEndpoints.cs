@@ -164,13 +164,32 @@ public static class InspectionEndpoints
                     store.AddOperationLog("inspection", "inspection", "manual", "本轮手动巡检没有可执行的自动动作", siteId: resolvedSiteId);
                 }
 
+                if (settings.PriorityRoutingEnabled
+                    && store.TryAutoReorderAccountPriorities(
+                        decisions.Select(decision => decision.AccountName).ToList(),
+                        settings.UsedPercentThreshold,
+                        out var reorderedPriorities,
+                        resolvedSiteId))
+                {
+                    store.AddOperationLog("priority", "priorityRouting", "manual",
+                        "手动巡检后已按免费号额度和新账号规则自动重排优先级", siteId: resolvedSiteId);
+                    await PriorityRoutingRemoteSync.TrySyncAsync(
+                        store,
+                        cpa,
+                        settings,
+                        reorderedPriorities,
+                        resolvedSiteId,
+                        ct,
+                        "手动巡检后已自动重排优先级");
+                }
+
                 // 汇总巡检结果并写入运行时状态。
                 var runResult = BuildRunResult(candidates.Count, decisions, outcomes, store.GetLastRunStartedAt(resolvedSiteId), DateTime.UtcNow, "completed");
 
                 // 优先级路由调度：无论是否有自动动作，开启时都执行
                 if (settings.PriorityRoutingEnabled)
                 {
-                    store.AddOperationLog("account", "priorityRouting", "manual",
+                    store.AddOperationLog("priority", "priorityRouting", "manual",
                         "手动巡检完成，开始执行优先级路由调度", siteId: resolvedSiteId);
                     var priorityOutcomes = await ApplyPriorityRoutingAsync(store, engine, cpa, settings, resolvedSiteId, decisions, ct);
                     runResult.PriorityRoutingOutcomes = priorityOutcomes;
@@ -480,7 +499,8 @@ public static class InspectionEndpoints
         var activeAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var priority in priorities.OrderBy(p => p.Priority))
         {
-            if (exceptions.Contains(priority.Name)) continue;
+            // 待首检和例外账号都不能提前参与优先级路由。
+            if (priority.PendingFirstInspection || exceptions.Contains(priority.Name)) continue;
 
             var account = store.GetAccount(priority.Name, siteId);
             if (account == null) continue;
@@ -488,7 +508,7 @@ public static class InspectionEndpoints
             var quota = store.GetQuota(priority.Name, siteId);
             var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
 
-            if (!weeklyPercent.HasValue || weeklyPercent.Value < settings.UsedPercentThreshold)
+            if (weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold)
             {
                 activeAccountNames.Add(priority.Name);
                 if (activeAccountNames.Count >= minActiveCount) break;
@@ -497,12 +517,12 @@ public static class InspectionEndpoints
 
         if (activeAccountNames.Count == 0)
         {
-            store.AddOperationLog("account", "priorityRouting", "manual",
+            store.AddOperationLog("priority", "priorityRouting", "manual",
                 "优先级路由：所有配置优先级的账号额度已耗尽", "warning", siteId: siteId);
         }
         else if (activeAccountNames.Count < minActiveCount)
         {
-            store.AddOperationLog("account", "priorityRouting", "manual",
+            store.AddOperationLog("priority", "priorityRouting", "manual",
                 $"优先级路由：仅剩 {activeAccountNames.Count} 个可用账号，不足最少保持数 {minActiveCount}", "warning", siteId: siteId);
         }
 
@@ -512,7 +532,7 @@ public static class InspectionEndpoints
         {
             var priorityEntry = priorities.FirstOrDefault(
                 p => string.Equals(p.Name, account.Name, StringComparison.OrdinalIgnoreCase));
-            if (priorityEntry == null) continue;
+            if (priorityEntry == null || exceptions.Contains(account.Name)) continue;
 
             if (activeAccountNames.Contains(account.Name))
             {
@@ -528,7 +548,7 @@ public static class InspectionEndpoints
                             Action = "enable", FileName = account.Name,
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
                         });
-                        store.AddOperationLog("account", "priorityRouting", "manual",
+                        store.AddOperationLog("priority", "priorityRouting", "manual",
                             $"优先级路由恢复启用：{account.Name}（优先级 {priorityEntry.Priority}）", siteId: siteId);
                     }
                     catch (Exception ex)
@@ -539,7 +559,7 @@ public static class InspectionEndpoints
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
                             Error = ex.Message,
                         });
-                        store.AddOperationLog("account", "priorityRouting", "manual",
+                        store.AddOperationLog("priority", "priorityRouting", "manual",
                             $"优先级路由恢复启用失败：{account.Name}，{ex.Message}", "error", siteId: siteId);
                     }
                 }
@@ -558,7 +578,7 @@ public static class InspectionEndpoints
                             Action = "disable", FileName = account.Name,
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = true,
                         });
-                        store.AddOperationLog("account", "priorityRouting", "manual",
+                        store.AddOperationLog("priority", "priorityRouting", "manual",
                             $"优先级路由待命禁用：{account.Name}（优先级 {priorityEntry.Priority}）", siteId: siteId);
                     }
                     catch (Exception ex)
@@ -569,7 +589,7 @@ public static class InspectionEndpoints
                             DisplayAccount = account.Account ?? account.Email ?? account.Name, Success = false,
                             Error = ex.Message,
                         });
-                        store.AddOperationLog("account", "priorityRouting", "manual",
+                        store.AddOperationLog("priority", "priorityRouting", "manual",
                             $"优先级路由待命禁用失败：{account.Name}，{ex.Message}", "error", siteId: siteId);
                     }
                 }

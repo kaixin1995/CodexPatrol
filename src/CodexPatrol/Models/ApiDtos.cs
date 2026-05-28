@@ -588,6 +588,12 @@ public sealed class AccountPriorityResponse
     /// </summary>
     [JsonPropertyName("priority")]
     public int Priority { get; set; }
+
+    /// <summary>
+    /// 是否等待下一次巡检先做首检，再纳入自动排序。
+    /// </summary>
+    [JsonPropertyName("pendingFirstInspection")]
+    public bool PendingFirstInspection { get; set; }
 }
 
 /// <summary>

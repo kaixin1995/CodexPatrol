@@ -266,12 +266,14 @@ public sealed class SettingsPersistenceTests
 
             var quotaEntry = store.AddOperationLog("quota", "quotaRefresh", "manual", "额度刷新日志", siteId: "default");
             var accountEntry = store.AddOperationLog("account", "accountEnable", "manual", "账号启用日志", siteId: "default");
+            var priorityEntry = store.AddOperationLog("priority", "priorityRouting", "system", "优先级日志", siteId: "default");
             var monitorEntry = store.AddOperationLog("monitor", "usageQueue", "system", "监控日志", siteId: "default");
             var startupEntry = store.AddOperationLog("system", "startup", "system", "启动日志", siteId: "default");
             var systemEntry = store.AddOperationLog("system", "other", "system", "系统日志", siteId: "default");
 
             Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", quotaEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Quota.log")));
             Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", accountEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Account.log")));
+            Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", priorityEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Priority.log")));
             Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", monitorEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "UsageQueue.log")));
             Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", startupEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "Startup.log")));
             Assert.True(File.Exists(Path.Combine(baseDirectory, "logs", systemEntry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd"), "System.log")));
@@ -1810,7 +1812,7 @@ public sealed class SettingsPersistenceTests
 
             store.SetAccountPriorities(
             [
-                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "free-1", Priority = 1, PendingFirstInspection = true },
                 new AccountPriority { Name = "pro-1", Priority = 3 },
                 new AccountPriority { Name = "free-2", Priority = 2 },
             ]);
@@ -1822,10 +1824,13 @@ public sealed class SettingsPersistenceTests
             Assert.Equal(3, priorities.Count);
             Assert.Equal("free-1", priorities[0].Name);
             Assert.Equal(1, priorities[0].Priority);
+            Assert.True(priorities[0].PendingFirstInspection);
             Assert.Equal("free-2", priorities[1].Name);
             Assert.Equal(2, priorities[1].Priority);
+            Assert.False(priorities[1].PendingFirstInspection);
             Assert.Equal("pro-1", priorities[2].Name);
             Assert.Equal(3, priorities[2].Priority);
+            Assert.False(priorities[2].PendingFirstInspection);
         }
         finally
         {
@@ -1852,6 +1857,133 @@ public sealed class SettingsPersistenceTests
             var priorities = store.GetAccountPriorities();
             Assert.Single(priorities);
             Assert.Equal("valid", priorities[0].Name);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void SetAccounts_ShouldAppendNewPriorityAccountsAsPendingFirstInspection()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.AddException("ignored");
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "existing", Priority = 1 },
+            ]);
+
+            store.SetAccounts(
+            [
+                BuildAccount("existing", "existing@test.com"),
+                BuildAccount("new-free", "new@test.com"),
+                BuildAccount("ignored", "ignored@test.com"),
+            ]);
+
+            var priorities = store.GetAccountPriorities();
+
+            Assert.Equal(2, priorities.Count);
+            Assert.Equal("existing", priorities[0].Name);
+            Assert.Equal(1, priorities[0].Priority);
+            Assert.False(priorities[0].PendingFirstInspection);
+            Assert.Equal("new-free", priorities[1].Name);
+            Assert.Equal(2, priorities[1].Priority);
+            Assert.True(priorities[1].PendingFirstInspection);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void TryAutoReorderAccountPriorities_ShouldKeepPendingAccountsUntilTheyAreInspected()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts(
+            [
+                BuildAccount("existing", "existing@test.com"),
+                BuildAccount("new-free", "new@test.com"),
+            ]);
+            store.SetQuota("existing", BuildQuota("existing", "existing@test.com", DateTime.UtcNow, usedPercent: 20));
+            store.SetQuota("new-free", BuildQuota("new-free", "new@test.com", DateTime.UtcNow, usedPercent: 10));
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "existing", Priority = 1 },
+                new AccountPriority { Name = "new-free", Priority = 2, PendingFirstInspection = true },
+            ]);
+
+            var changed = store.TryAutoReorderAccountPriorities(["existing"], 95, out var priorities);
+
+            Assert.False(changed);
+            Assert.Equal(2, priorities.Count);
+            Assert.Equal("new-free", priorities[1].Name);
+            Assert.True(priorities[1].PendingFirstInspection);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public void TryAutoReorderAccountPriorities_ShouldInsertNewFreeAccountsByRemainingQuotaAndSinkExhaustedFree()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts(
+            [
+                BuildAccount("free-1", "f1@test.com"),
+                BuildAccount("paid-1", "p1@test.com"),
+                BuildAccount("free-2", "f2@test.com"),
+                BuildAccount("new-free-high", "nfh@test.com"),
+                BuildAccount("new-free-low", "nfl@test.com"),
+                BuildAccount("new-paid", "np@test.com"),
+            ]);
+
+            store.SetQuota("free-1", BuildQuota("free-1", "f1@test.com", DateTime.UtcNow, usedPercent: 20));
+            var paidQuota = BuildQuota("paid-1", "p1@test.com", DateTime.UtcNow, usedPercent: 10);
+            paidQuota.PlanType = "Pro";
+            store.SetQuota("paid-1", paidQuota);
+            store.SetQuota("free-2", BuildQuota("free-2", "f2@test.com", DateTime.UtcNow, usedPercent: 99));
+            store.SetQuota("new-free-high", BuildQuota("new-free-high", "nfh@test.com", DateTime.UtcNow, usedPercent: 10));
+            store.SetQuota("new-free-low", BuildQuota("new-free-low", "nfl@test.com", DateTime.UtcNow, usedPercent: 40));
+            var newPaidQuota = BuildQuota("new-paid", "np@test.com", DateTime.UtcNow, usedPercent: 5);
+            newPaidQuota.PlanType = "Pro";
+            store.SetQuota("new-paid", newPaidQuota);
+
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "free-1", Priority = 1 },
+                new AccountPriority { Name = "paid-1", Priority = 2 },
+                new AccountPriority { Name = "free-2", Priority = 3 },
+                new AccountPriority { Name = "new-free-high", Priority = 4, PendingFirstInspection = true },
+                new AccountPriority { Name = "new-free-low", Priority = 5, PendingFirstInspection = true },
+                new AccountPriority { Name = "new-paid", Priority = 6, PendingFirstInspection = true },
+            ]);
+
+            var changed = store.TryAutoReorderAccountPriorities(
+                ["free-1", "paid-1", "free-2", "new-free-high", "new-free-low", "new-paid"],
+                95,
+                out var priorities);
+
+            Assert.True(changed);
+            Assert.Equal(
+                ["free-1", "new-free-high", "new-free-low", "new-paid", "paid-1", "free-2"],
+                priorities.Select(priority => priority.Name).ToArray());
+            Assert.Equal([1, 2, 3, 4, 5, 6], priorities.Select(priority => priority.Priority).ToArray());
+            Assert.All(
+                priorities.Where(priority => priority.Name.StartsWith("new-", StringComparison.OrdinalIgnoreCase)),
+                priority => Assert.False(priority.PendingFirstInspection));
         }
         finally
         {
@@ -2104,6 +2236,281 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public async Task ApplyPriorityRoutingAsync_ShouldTreatPendingFirstInspectionAccountsAsStandby()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("existing", "existing@test.com"),
+                BuildAccount("pending", "pending@test.com"),
+            ]);
+
+            store.SetQuota("existing", BuildQuota("existing", "existing@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "existing", Priority = 1 },
+                new AccountPriority { Name = "pending", Priority = 2, PendingFirstInspection = true },
+            ]);
+            store.UpdateSettings(s =>
+            {
+                s.PriorityRoutingEnabled = true;
+                s.PriorityMinActiveCount = 2;
+            });
+
+            var disableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":true"))
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        var name = document.RootElement.GetProperty("name").GetString() ?? "";
+                        disableRequests.Add(name);
+                    }
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeApplyPriorityRoutingAsync(service, "default", store.GetSettings(), []);
+
+            Assert.Contains("pending", disableRequests);
+            Assert.Equal(DisableReason.OrderedStandby, store.GetDisableReason("pending", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyPriorityRoutingAsync_ShouldNotProcessExceptionAccountsEvenIfPriorityExists()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+
+            store.SetAccounts(
+            [
+                BuildAccount("normal", "normal@test.com"),
+                BuildAccount("exception", "exception@test.com"),
+            ]);
+
+            store.SetQuota("normal", BuildQuota("normal", "normal@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+            store.SetQuota("exception", BuildQuota("exception", "exception@test.com", DateTime.UtcNow, usedPercent: 20), "default");
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "normal", Priority = 1 },
+                new AccountPriority { Name = "exception", Priority = 2 },
+            ]);
+            store.AddException("exception");
+            store.UpdateSettings(s => s.PriorityRoutingEnabled = true);
+
+            var disableRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(req =>
+            {
+                if (req.Method == HttpMethod.Patch && req.RequestUri?.AbsolutePath == "/v0/management/auth-files/status")
+                {
+                    var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    if (body.Contains("\"disabled\":true"))
+                    {
+                        using var document = JsonDocument.Parse(body);
+                        var name = document.RootElement.GetProperty("name").GetString() ?? "";
+                        disableRequests.Add(name);
+                    }
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeApplyPriorityRoutingAsync(service, "default", store.GetSettings(), []);
+
+            Assert.DoesNotContain("exception", disableRequests);
+            Assert.Equal(DisableReason.None, store.GetDisableReason("exception", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task PriorityRoutingRemoteSync_ShouldSkipPendingAndExceptionAccounts()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.AddException("exception");
+            store.UpdateSettings(s =>
+            {
+                s.CpaBaseUrl = "http://test-host";
+                s.ManagementKey = "test-key";
+            });
+
+            var patchRequests = new List<string>();
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Get && request.RequestUri?.AbsolutePath == "/v0/management/auth-files")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {
+                          "files": [
+                            { "name": "ready", "priority": 5, "disabled": false },
+                            { "name": "pending", "priority": 4, "disabled": false },
+                            { "name": "exception", "priority": 3, "disabled": false }
+                          ],
+                          "total": 3
+                        }
+                        """, Encoding.UTF8, "application/json")
+                    };
+                }
+
+                if (request.Method == HttpMethod.Patch && request.RequestUri?.AbsolutePath == "/v0/management/auth-files/fields")
+                {
+                    var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                    using var document = JsonDocument.Parse(body);
+                    patchRequests.Add(document.RootElement.GetProperty("name").GetString() ?? "");
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+
+            var warning = await InvokePriorityRoutingRemoteSyncAsync(
+                store,
+                cpa,
+                store.GetSettings(),
+                [
+                    new AccountPriority { Name = "ready", Priority = 1 },
+                    new AccountPriority { Name = "pending", Priority = 2, PendingFirstInspection = true },
+                    new AccountPriority { Name = "exception", Priority = 3 },
+                ],
+                "default",
+                CancellationToken.None);
+
+            Assert.Null(warning);
+            Assert.Equal(["ready"], patchRequests);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task RunInspectionAsync_ShouldNotAutoReorderOrSyncWhenPriorityRoutingDisabled()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.SetAccounts([BuildAccount("pending-free", "pending@test.com")], "default");
+            store.SetAccountPriorities(
+            [
+                new AccountPriority { Name = "pending-free", Priority = 1, PendingFirstInspection = true },
+            ]);
+            store.UpdateSettings(s =>
+            {
+                s.CpaBaseUrl = "http://test-host";
+                s.ManagementKey = "test-key";
+                s.PriorityRoutingEnabled = false;
+                s.ProbeWorkers = 1;
+                s.ProbeBatchDelayMinMs = 0;
+                s.ProbeBatchDelayMaxMs = 0;
+                s.TimeoutMs = 5000;
+            });
+
+            var priorityPatchCount = 0;
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Get && request.RequestUri?.AbsolutePath == "/v0/management/auth-files")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {
+                          "files": [
+                            {
+                              "name": "pending-free",
+                              "email": "pending@test.com",
+                              "provider": "codex",
+                              "auth_index": "auth-pending-free",
+                              "disabled": false,
+                              "priority": 8
+                            }
+                          ],
+                          "total": 1
+                        }
+                        """, Encoding.UTF8, "application/json")
+                    };
+                }
+
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return BuildApiCallUsageResponse(10);
+                }
+
+                if (request.Method == HttpMethod.Patch && request.RequestUri?.AbsolutePath == "/v0/management/auth-files/fields")
+                {
+                    priorityPatchCount++;
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var cpa = new CpaClient(new HttpClient(handler));
+            var engine = new InspectionEngine(cpa, store);
+            var service = new AutoPollingService(engine, cpa, store, CreateLogger<AutoPollingService>());
+
+            await InvokeRunInspectionAsync(service, "default", store.GetSettings(), CancellationToken.None);
+
+            var priorities = store.GetAccountPriorities("default");
+            var priority = Assert.Single(priorities);
+            Assert.True(priority.PendingFirstInspection);
+            Assert.Equal(0, priorityPatchCount);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
     public void GetQuotas_ShouldIncludeDisableReason()
     {
         var baseDirectory = CreateTempDirectory();
@@ -2191,6 +2598,36 @@ public sealed class SettingsPersistenceTests
     }
 
     /// <summary>
+    /// 通过反射调用自动巡检主流程。
+    /// </summary>
+    private static async Task InvokeRunInspectionAsync(AutoPollingService service, string siteId, PatrolSiteSettings settings, CancellationToken cancellationToken)
+    {
+        var method = typeof(AutoPollingService).GetMethod("RunInspectionAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, cancellationToken, false]));
+        await task;
+    }
+
+    /// <summary>
+    /// 通过反射调用远端优先级同步逻辑。
+    /// </summary>
+    private static async Task<string?> InvokePriorityRoutingRemoteSyncAsync(
+        RuntimeStore store,
+        CpaClient cpa,
+        PatrolSiteSettings settings,
+        List<AccountPriority> priorities,
+        string siteId,
+        CancellationToken cancellationToken)
+    {
+        var type = typeof(RuntimeStore).Assembly.GetType("CodexPatrol.Services.PriorityRoutingRemoteSync");
+        Assert.NotNull(type);
+        var method = type!.GetMethod("TrySyncAsync", BindingFlags.Public | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsType<Task<string?>>(method!.Invoke(null, [store, cpa, settings, priorities, siteId, cancellationToken, "测试同步"]));
+        return await task;
+    }
+
+    /// <summary>
     /// 通过反射调用优先级路由调度逻辑。
     /// </summary>
     private static async Task InvokeApplyPriorityRoutingAsync(AutoPollingService service, string siteId, PatrolSiteSettings settings, List<InspectionDecision> decisions)
@@ -2199,6 +2636,35 @@ public sealed class SettingsPersistenceTests
         Assert.NotNull(method);
         var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [siteId, settings, decisions, CancellationToken.None]));
         await task;
+    }
+
+    private static HttpResponseMessage BuildApiCallUsageResponse(double usedPercent)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            plan_type = "free",
+            rate_limit = new
+            {
+                allowed = true,
+                limit_reached = false,
+                primary_window = new
+                {
+                    used_percent = usedPercent,
+                    limit_window_seconds = 604800,
+                    reset_after_seconds = 86400,
+                },
+                secondary_window = (object?)null,
+            },
+        });
+        var envelope = JsonSerializer.Serialize(new
+        {
+            status_code = 200,
+            bodyText = body,
+        });
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(envelope, Encoding.UTF8, "application/json"),
+        };
     }
 
     private static HttpResponseMessage BuildCodexUsageResponse(double usedPercent)

@@ -34,67 +34,6 @@ public sealed class QuotaCachePolicyTests
         Assert.Equal("", result);
     }
 
-    [Fact]
-    public void BuildLastUsageByAuthIndex_ShouldPickLatestTimestampPerAuthIndex()
-    {
-        const string rawJson = """
-        {
-          "apis": {
-            "chatgpt": {
-              "models": {
-                "codex": {
-                  "details": [
-                    { "auth_index": "auth-a", "timestamp": "2026-05-20T08:00:00Z" },
-                    { "authIndex": "auth-a", "timestamp": "2026-05-20T09:30:00Z" },
-                    { "auth_index": "auth-b", "timestamp": "2026-05-20T07:00:00+08:00" }
-                  ]
-                }
-              }
-            }
-          }
-        }
-        """;
-
-        var result = UsageActivityAnalyzer.BuildLastUsageByAuthIndex(rawJson);
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal(new DateTime(2026, 5, 20, 9, 30, 0, DateTimeKind.Utc), result["auth-a"]);
-        Assert.Equal(new DateTime(2026, 5, 19, 23, 0, 0, DateTimeKind.Utc), result["auth-b"]);
-    }
-
-    [Fact]
-    public void BuildLastUsageByAuthIndex_ShouldScanNestedPayloadRecursively()
-    {
-        const string rawJson = """
-        {
-          "records": [
-            {
-              "group": {
-                "details": [
-                  { "auth_index": "auth-a", "timestamp": "2026-05-20T08:00:00Z" }
-                ]
-              }
-            },
-            {
-              "items": [
-                {
-                  "meta": {
-                    "authIndex": "auth-b",
-                    "timestamp": "2026-05-20T10:30:00+08:00"
-                  }
-                }
-              ]
-            }
-          ]
-        }
-        """;
-
-        var result = UsageActivityAnalyzer.BuildLastUsageByAuthIndex(rawJson);
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal(new DateTime(2026, 5, 20, 8, 0, 0, DateTimeKind.Utc), result["auth-a"]);
-        Assert.Equal(new DateTime(2026, 5, 20, 2, 30, 0, DateTimeKind.Utc), result["auth-b"]);
-    }
 
     [Fact]
     public void TryReuseQuota_ShouldCloneCachedQuota_WhenNoNewUsageAndWindowNotReset()

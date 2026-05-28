@@ -101,18 +101,22 @@ async function loadPriorityData() {
 
   if (savedPriorities.length > 0) {
     // 已有配置：使用保存的顺序，补充新增账号到末尾
-    priorityEntries = savedPriorities.map(p => ({ name: p.name, priority: p.priority }));
+    priorityEntries = savedPriorities.map(p => ({
+      name: p.name,
+      priority: p.priority,
+      pendingFirstInspection: p.pendingFirstInspection === true,
+    }));
     const existingNames = new Set(priorityEntries.map(e => normalizeNameKey(e.name)));
     let nextPriority = priorityEntries.length;
     for (const a of cachedAccounts) {
       if (!existingNames.has(normalizeNameKey(a.name))) {
         nextPriority++;
-        priorityEntries.push({ name: a.name, priority: nextPriority });
+        priorityEntries.push({ name: a.name, priority: nextPriority, pendingFirstInspection: true });
       }
     }
   } else {
     // 从未配置：用全部账号按默认顺序初始化
-    priorityEntries = cachedAccounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
+    priorityEntries = cachedAccounts.map((a, i) => ({ name: a.name, priority: i + 1, pendingFirstInspection: false }));
   }
 
   document.getElementById('priority-enabled').checked = priorityRoutingEnabled;
@@ -146,7 +150,10 @@ function renderPriorityList() {
     const statusClass = isDisabled ? 'badge-bad' : 'badge-good';
     const statusText = isDisabled ? '已禁用' : '启用中';
     const planType = quota?.planType?.trim();
-    const quotaText = buildPriorityQuotaText(quota);
+    const pendingFirstInspection = entry.pendingFirstInspection === true;
+    const quotaText = pendingFirstInspection
+      ? '待首检，下一次巡检后自动纳入排序'
+      : buildPriorityQuotaText(quota);
 
     html += `<div class="priority-row" draggable="true" data-index="${index}">
       <span class="drag-handle" title="拖拽排序">⠿</span>
@@ -156,6 +163,7 @@ function renderPriorityList() {
         <span class="priority-quota">${escapeHtml(quotaText)}</span>
       </div>
       ${planType ? `<span class="priority-plan" title="套餐：${escapeHtml(planType)}">${escapeHtml(planType)}</span>` : ''}
+      ${pendingFirstInspection ? '<span class="badge badge-warn" style="font-size:10px;padding:2px 6px;border-radius:10px">待首检</span>' : ''}
       <span class="badge ${statusClass}" style="font-size:10px;padding:2px 6px;border-radius:10px">${statusText}</span>
     </div>`;
   });
@@ -218,6 +226,7 @@ async function savePriorityConfig() {
     const entries = priorityEntries.map((entry, index) => ({
       name: entry.name,
       priority: index + 1,
+      pendingFirstInspection: entry.pendingFirstInspection === true,
     }));
 
     const data = await api(`/api/settings/priority-routing?siteId=${encodeURIComponent(currentSiteId)}`, {
@@ -234,6 +243,7 @@ async function savePriorityConfig() {
     priorityEntries = (data?.accountPriorities || entries).map((entry, index) => ({
       name: entry.name,
       priority: entry.priority ?? (index + 1),
+      pendingFirstInspection: entry.pendingFirstInspection === true,
     }));
     renderPriorityList();
 
@@ -250,7 +260,12 @@ async function savePriorityConfig() {
 }
 
 function resetToDefaultOrder() {
-  priorityEntries = cachedAccounts.map((a, i) => ({ name: a.name, priority: i + 1 }));
+  const pendingMap = Object.fromEntries(priorityEntries.map(entry => [normalizeNameKey(entry.name), entry.pendingFirstInspection === true]));
+  priorityEntries = cachedAccounts.map((a, i) => ({
+    name: a.name,
+    priority: i + 1,
+    pendingFirstInspection: pendingMap[normalizeNameKey(a.name)] === true,
+  }));
   renderPriorityList();
 }
 

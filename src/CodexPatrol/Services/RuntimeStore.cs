@@ -372,6 +372,7 @@ public sealed class RuntimeStore
                 }
             }
 
+            MergeAccountsIntoPriorityRouting(state, files);
             SaveQuotaState();
         }
     }
@@ -441,10 +442,7 @@ public sealed class RuntimeStore
     public List<AccountPriority> GetAccountPriorities(string? siteId = null)
     {
         var state = GetState(siteId);
-        return state.AccountPriorities
-            .Select(kv => new AccountPriority { Name = kv.Key, Priority = kv.Value })
-            .OrderBy(p => p.Priority)
-            .ToList();
+        return GetOrderedAccountPriorities(state);
     }
 
     /// <summary>
@@ -455,15 +453,141 @@ public sealed class RuntimeStore
         var state = GetState(siteId);
         lock (_configLock)
         {
-            state.AccountPriorities.Clear();
-            foreach (var p in priorities)
+            SaveOrderedAccountPriorities(state,
+                NormalizePrioritySequence(priorities
+                    .OrderBy(p => p.Priority)
+                    .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)));
+        }
+    }
+
+    /// <summary>
+    /// 巡检完成后按既定规则自动重建优先级顺序，并确保优先级唯一。
+    /// </summary>
+    public bool TryAutoReorderAccountPriorities(
+        IReadOnlyCollection<string> inspectedAccountNames,
+        int threshold,
+        out List<AccountPriority> priorities,
+        string? siteId = null)
+    {
+        var state = GetState(siteId);
+        lock (_configLock)
+        {
+            var ordered = GetOrderedAccountPriorities(state);
+            if (ordered.Count == 0)
             {
-                if (!string.IsNullOrWhiteSpace(p.Name) && p.Priority > 0)
-                {
-                    state.AccountPriorities[p.Name] = p.Priority;
-                }
+                priorities = [];
+                return false;
             }
-            SavePatrolConfig();
+
+            var inspected = new HashSet<string>(
+                inspectedAccountNames.Where(name => !string.IsNullOrWhiteSpace(name)),
+                StringComparer.OrdinalIgnoreCase);
+            var baseline = new List<AccountPriority>();
+            var pendingUninspected = new List<AccountPriority>();
+            var newFreeEntries = new List<(AccountPriority Priority, double UsedPercent)>();
+            var newOtherEntries = new List<AccountPriority>();
+            var bottomEntries = new List<AccountPriority>();
+
+            foreach (var entry in ordered)
+            {
+                if (state.Exceptions.Contains(entry.Name))
+                {
+                    baseline.Add(CloneAccountPriority(entry));
+                    continue;
+                }
+
+                var wasPending = entry.PendingFirstInspection;
+                var quota = state.Quotas.TryGetValue(entry.Name, out var snapshot) ? snapshot : null;
+                var isFreePlan = string.Equals(quota?.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
+                var weeklyPercent = quota is not null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
+                var isFreeExhausted = isFreePlan && weeklyPercent.HasValue && weeklyPercent.Value >= threshold;
+
+                if (wasPending && inspected.Contains(entry.Name))
+                {
+                    if (isFreePlan && !weeklyPercent.HasValue)
+                    {
+                        pendingUninspected.Add(CloneAccountPriority(entry));
+                        continue;
+                    }
+
+                    entry.PendingFirstInspection = false;
+                }
+
+                if (entry.PendingFirstInspection)
+                {
+                    pendingUninspected.Add(CloneAccountPriority(entry));
+                    continue;
+                }
+
+                if (isFreeExhausted)
+                {
+                    bottomEntries.Add(CloneAccountPriority(entry));
+                    continue;
+                }
+
+                if (wasPending)
+                {
+                    if (isFreePlan && weeklyPercent.HasValue)
+                    {
+                        newFreeEntries.Add((CloneAccountPriority(entry), weeklyPercent.Value));
+                    }
+                    else
+                    {
+                        newOtherEntries.Add(CloneAccountPriority(entry));
+                    }
+
+                    continue;
+                }
+
+                baseline.Add(CloneAccountPriority(entry));
+            }
+
+            var insertAfterIndex = baseline.FindLastIndex(entry =>
+            {
+                if (!state.Quotas.TryGetValue(entry.Name, out var quota)
+                    || !string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                var weeklyPercent = CodexQuotaParser.GetWeeklyUsedPercent(quota);
+                return weeklyPercent.HasValue && weeklyPercent.Value < threshold;
+            });
+
+            var finalOrder = new List<AccountPriority>();
+            if (insertAfterIndex >= 0)
+            {
+                finalOrder.AddRange(baseline.Take(insertAfterIndex + 1));
+            }
+            else
+            {
+                finalOrder.AddRange(baseline);
+            }
+
+            finalOrder.AddRange(newFreeEntries
+                .OrderBy(item => item.UsedPercent)
+                .ThenBy(item => item.Priority.Priority)
+                .Select(item => item.Priority));
+            finalOrder.AddRange(newOtherEntries);
+
+            if (insertAfterIndex >= 0)
+            {
+                finalOrder.AddRange(baseline.Skip(insertAfterIndex + 1));
+            }
+
+            finalOrder.AddRange(pendingUninspected);
+            finalOrder.AddRange(bottomEntries);
+
+            var normalized = NormalizePrioritySequence(finalOrder);
+            var changed = !AreSamePrioritySequence(ordered, normalized);
+            priorities = normalized.Select(CloneAccountPriority).ToList();
+            if (!changed)
+            {
+                return false;
+            }
+
+            SaveOrderedAccountPriorities(state, normalized);
+            return true;
         }
     }
 
@@ -473,7 +597,144 @@ public sealed class RuntimeStore
     public int? GetAccountPriority(string accountName, string? siteId = null)
     {
         var state = GetState(siteId);
-        return state.AccountPriorities.TryGetValue(accountName, out var priority) ? priority : null;
+        return state.AccountPriorities.TryGetValue(accountName, out var priority) ? priority.Priority : null;
+    }
+
+    /// <summary>
+    /// 将当前账号列表并入优先级配置：新增账号补到末尾并标记为待首检，移除的账号则自动清理。
+    /// </summary>
+    private void MergeAccountsIntoPriorityRouting(SiteRuntimeState state, IReadOnlyList<AuthFileItem> files)
+    {
+        if (state.AccountPriorities.Count == 0 && !state.Settings.PriorityRoutingEnabled)
+        {
+            return;
+        }
+
+        var currentNames = new HashSet<string>(files
+            .Where(file => !string.IsNullOrWhiteSpace(file.Name))
+            .Select(file => file.Name.Trim()), StringComparer.OrdinalIgnoreCase);
+        var merged = GetOrderedAccountPriorities(state)
+            .Where(priority => currentNames.Contains(priority.Name))
+            .ToList();
+        var changed = merged.Count != state.AccountPriorities.Count;
+        var knownNames = merged.Select(priority => priority.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in files)
+        {
+            var name = file.Name.Trim();
+            if (name.Length == 0 || knownNames.Contains(name) || state.Exceptions.Contains(name))
+            {
+                continue;
+            }
+
+            merged.Add(new AccountPriority
+            {
+                Name = name,
+                Priority = merged.Count + 1,
+                PendingFirstInspection = true,
+            });
+            knownNames.Add(name);
+            changed = true;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        SaveOrderedAccountPriorities(state, NormalizePrioritySequence(merged));
+    }
+
+    /// <summary>
+    /// 返回当前站点按优先级升序排列的账号优先级条目副本。
+    /// </summary>
+    private static List<AccountPriority> GetOrderedAccountPriorities(SiteRuntimeState state)
+    {
+        return state.AccountPriorities.Values
+            .Where(priority => !string.IsNullOrWhiteSpace(priority.Name) && priority.Priority > 0)
+            .OrderBy(priority => priority.Priority)
+            .ThenBy(priority => priority.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(CloneAccountPriority)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 按当前枚举顺序重新编号为唯一的 1..N 优先级。
+    /// </summary>
+    private static List<AccountPriority> NormalizePrioritySequence(IEnumerable<AccountPriority> priorities)
+    {
+        var normalized = new List<AccountPriority>();
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var priority in priorities)
+        {
+            var name = priority.Name.Trim();
+            if (name.Length == 0 || priority.Priority <= 0 || !seenNames.Add(name))
+            {
+                continue;
+            }
+
+            normalized.Add(new AccountPriority
+            {
+                Name = name,
+                Priority = normalized.Count + 1,
+                PendingFirstInspection = priority.PendingFirstInspection,
+            });
+        }
+
+        return normalized;
+    }
+
+    /// <summary>
+    /// 比较两组优先级序列的名称、顺序和待首检状态是否完全一致。
+    /// </summary>
+    private static bool AreSamePrioritySequence(IReadOnlyList<AccountPriority> current, IReadOnlyList<AccountPriority> updated)
+    {
+        if (current.Count != updated.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < current.Count; index++)
+        {
+            var left = current[index];
+            var right = updated[index];
+            if (!string.Equals(left.Name, right.Name, StringComparison.OrdinalIgnoreCase)
+                || left.Priority != right.Priority
+                || left.PendingFirstInspection != right.PendingFirstInspection)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 用新的有序优先级列表整体替换站点优先级配置并持久化。
+    /// </summary>
+    private void SaveOrderedAccountPriorities(SiteRuntimeState state, IReadOnlyList<AccountPriority> priorities)
+    {
+        state.AccountPriorities.Clear();
+        foreach (var priority in priorities)
+        {
+            state.AccountPriorities[priority.Name] = CloneAccountPriority(priority);
+        }
+
+        SavePatrolConfig();
+    }
+
+    /// <summary>
+    /// 克隆优先级条目，避免运行时状态被外部引用直接修改。
+    /// </summary>
+    private static AccountPriority CloneAccountPriority(AccountPriority priority)
+    {
+        return new AccountPriority
+        {
+            Name = priority.Name,
+            Priority = priority.Priority,
+            PendingFirstInspection = priority.PendingFirstInspection,
+        };
     }
 
     /// <summary>
@@ -1179,9 +1440,14 @@ public sealed class RuntimeStore
             // 恢复账号优先级配置
             foreach (var priority in siteConfig?.AccountPriorities ?? [])
             {
-                if (!string.IsNullOrWhiteSpace(priority.Name))
+                if (!string.IsNullOrWhiteSpace(priority.Name) && priority.Priority > 0)
                 {
-                    state.AccountPriorities[priority.Name] = priority.Priority;
+                    state.AccountPriorities[priority.Name] = new AccountPriority
+                    {
+                        Name = priority.Name.Trim(),
+                        Priority = priority.Priority,
+                        PendingFirstInspection = priority.PendingFirstInspection,
+                    };
                 }
             }
 
@@ -1227,10 +1493,7 @@ public sealed class RuntimeStore
                     {
                         SiteId = state.Settings.SiteId,
                         Exceptions = state.Exceptions.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                        AccountPriorities = state.AccountPriorities
-                            .Select(kv => new AccountPriority { Name = kv.Key, Priority = kv.Value })
-                            .OrderBy(p => p.Priority)
-                            .ToList(),
+                        AccountPriorities = GetOrderedAccountPriorities(state),
                         Settings = PersistedPatrolSettings.FromRuntime(state.Settings),
                     })
                     .OrderBy(site => site.SiteId, StringComparer.OrdinalIgnoreCase)
