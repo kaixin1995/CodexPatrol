@@ -23,6 +23,7 @@ const quotaPageSize = 10;
 let currentFilter = 'enabled';
 let cachedPriorityMap = {};
 let cachedPriorityRoutingEnabled = false;
+let cachedUsedPercentThreshold = 95;
 
 function renderPage() {
   renderLayout('quotas', '额度管理', `
@@ -40,6 +41,7 @@ function renderPage() {
       <button class="settings-tab active" data-filter="enabled">仅启用</button>
       <button class="settings-tab" data-filter="error">仅错误</button>
     </div>
+    <div class="card" id="quota-availability-summary"></div>
     <div class="card">
       <h3>实时进度</h3>
       <div id="quota-progress"></div>
@@ -192,6 +194,67 @@ function renderAccountCard(account, quota) {
   `;
 }
 
+function getQuotaWindow(quota, seconds) {
+  return quota?.windows?.find(window => Number(window.limitWindowSeconds) === seconds) || null;
+}
+
+function isFreePlan(quota) {
+  return String(quota?.planType || '').trim().toLowerCase().startsWith('free');
+}
+
+function isQuotaExhausted(quota) {
+  if (!quota?.success) return false;
+
+  const weeklyWindow = getQuotaWindow(quota, 604800);
+  if (!weeklyWindow || !Number.isFinite(Number(weeklyWindow.usedPercent))) {
+    return false;
+  }
+
+  if (Number(weeklyWindow.usedPercent) >= cachedUsedPercentThreshold) {
+    return true;
+  }
+
+  const fiveHourWindow = getQuotaWindow(quota, 18000);
+  return !isFreePlan(quota)
+    && fiveHourWindow
+    && Number.isFinite(Number(fiveHourWindow.usedPercent))
+    && Number(fiveHourWindow.usedPercent) >= cachedUsedPercentThreshold;
+}
+
+function renderQuotaAvailabilitySummary() {
+  const container = document.getElementById('quota-availability-summary');
+  if (!container) return;
+
+  const quotaMap = Object.fromEntries((cachedQuotas || []).map(quota => [quota.accountName, quota]));
+  let availableCount = 0;
+  let exhaustedCount = 0;
+  let unknownCount = 0;
+
+  cachedAccounts.forEach(account => {
+    const quota = quotaMap[getAccountName(account)];
+    if (!quota?.success) {
+      unknownCount++;
+      return;
+    }
+
+    if (isQuotaExhausted(quota)) {
+      exhaustedCount++;
+    } else {
+      availableCount++;
+    }
+  });
+
+  container.innerHTML = `
+    <h3>额度统计</h3>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value">${availableCount}</div><div class="stat-label">可用额度账号</div></div>
+      <div class="stat-card"><div class="stat-value">${exhaustedCount}</div><div class="stat-label">额度耗尽账号</div></div>
+      <div class="stat-card"><div class="stat-value">${unknownCount}</div><div class="stat-label">未知额度账号</div></div>
+    </div>
+    <p class="hint" style="margin:8px 0 0">统计只按额度判断，与账号启用/禁用状态无关；免费号看周额度，收费号看周额度和 5 小时额度。</p>
+  `;
+}
+
 function getFilteredAccounts() {
   let accounts = cachedAccounts;
 
@@ -334,6 +397,8 @@ function renderQuotaGrid() {
   const empty = document.getElementById('quota-empty');
   const quotaMap = Object.fromEntries((cachedQuotas || []).map(quota => [quota.accountName, quota]));
 
+  renderQuotaAvailabilitySummary();
+
   if (cachedAccounts.length === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
@@ -395,14 +460,16 @@ async function loadQuotasPage({ refreshAccountList = false } = {}) {
       cachedAccounts = await getAccounts();
     }
 
-    const [quotas, exceptionNames, priorityData] = await Promise.all([
+    const [quotas, exceptionNames, priorityData, settings] = await Promise.all([
       api('/api/quotas'),
       loadExceptionNames(),
       api('/api/settings/priority-routing').catch(() => null),
+      api('/api/settings').catch(() => null),
     ]);
 
     cachedQuotas = quotas || [];
     cachedExceptions = exceptionNames;
+    cachedUsedPercentThreshold = settings?.usedPercentThreshold ?? 95;
 
     // 更新优先级路由缓存
     if (priorityData) {

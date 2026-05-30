@@ -129,6 +129,12 @@ public sealed class PersistedPatrolSettings
     public int PriorityMinActiveCount { get; set; } = 2;
 
     /// <summary>
+    /// 是否禁用缓存刷新策略，强制每次巡检都真实请求。
+    /// </summary>
+    [JsonPropertyName("disableCacheRefresh")]
+    public bool DisableCacheRefresh { get; set; }
+
+    /// <summary>
     /// 从运行时站点配置提取可持久化的业务设置。
     /// </summary>
     public static PersistedPatrolSettings FromRuntime(PatrolSiteSettings settings)
@@ -151,6 +157,7 @@ public sealed class PersistedPatrolSettings
             Provider = settings.Provider,
             PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
             PriorityMinActiveCount = settings.PriorityMinActiveCount,
+            DisableCacheRefresh = settings.DisableCacheRefresh,
         };
     }
 
@@ -175,5 +182,6 @@ public sealed class PersistedPatrolSettings
         settings.Provider = Provider;
         settings.PriorityRoutingEnabled = PriorityRoutingEnabled;
         settings.PriorityMinActiveCount = PriorityMinActiveCount;
+        settings.DisableCacheRefresh = DisableCacheRefresh;
     }
 }

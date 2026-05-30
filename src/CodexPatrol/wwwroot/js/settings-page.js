@@ -137,6 +137,13 @@ function renderPage() {
               <label>最少保持启用数</label>
               <input type="number" id="set-priority-min-active" min="1" max="10" value="2">
             </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-disable-cache-refresh">
+                禁用缓存刷新
+              </label>
+              <span style="color:var(--text-muted);font-size:11px;display:block;margin-top:2px">开启后每次巡检都强制真实请求，不再根据调用日志决定刷新。仅在日志模块被禁用时才需要开启。</span>
+            </div>
           </div>
         </div>
 
@@ -177,6 +184,7 @@ function fillForm(settings) {
   document.getElementById('set-auto-enable').checked = settings.autoEnableRecovered ?? false;
   document.getElementById('set-priority-routing').checked = settings.priorityRoutingEnabled ?? false;
   document.getElementById('set-priority-min-active').value = settings.priorityMinActiveCount ?? 2;
+  document.getElementById('set-disable-cache-refresh').checked = settings.disableCacheRefresh ?? false;
   document.getElementById('btn-settings-save').textContent = '保存设置';
   syncSiteSelect(currentSiteId);
   updateDeleteButtonState();
@@ -204,6 +212,7 @@ function resetFormForCreate() {
   document.getElementById('set-auto-enable').checked = false;
   document.getElementById('set-priority-routing').checked = false;
   document.getElementById('set-priority-min-active').value = 2;
+  document.getElementById('set-disable-cache-refresh').checked = false;
   document.getElementById('btn-settings-save').textContent = '创建站点';
   updateDeleteButtonState();
   setActiveTab('site');
@@ -265,6 +274,7 @@ function buildPayload() {
     autoEnableRecovered: document.getElementById('set-auto-enable').checked,
     priorityRoutingEnabled: document.getElementById('set-priority-routing').checked,
     priorityMinActiveCount: Number(document.getElementById('set-priority-min-active').value),
+    disableCacheRefresh: document.getElementById('set-disable-cache-refresh').checked,
   };
 }
 

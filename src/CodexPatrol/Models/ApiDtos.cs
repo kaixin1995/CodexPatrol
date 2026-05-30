@@ -288,6 +288,12 @@ public sealed class SettingsResponse
     /// </summary>
     [JsonPropertyName("priorityMinActiveCount")]
     public int PriorityMinActiveCount { get; set; }
+
+    /// <summary>
+    /// 是否禁用缓存刷新策略，强制每次巡检都真实请求。
+    /// </summary>
+    [JsonPropertyName("disableCacheRefresh")]
+    public bool DisableCacheRefresh { get; set; }
 }
 
 /// <summary>
@@ -450,6 +456,12 @@ public sealed class SaveSettingsRequest
     /// </summary>
     [JsonPropertyName("priorityMinActiveCount")]
     public int PriorityMinActiveCount { get; set; }
+
+    /// <summary>
+    /// 是否禁用缓存刷新策略，强制每次巡检都真实请求。
+    /// </summary>
+    [JsonPropertyName("disableCacheRefresh")]
+    public bool DisableCacheRefresh { get; set; }
 }
 
 /// <summary>

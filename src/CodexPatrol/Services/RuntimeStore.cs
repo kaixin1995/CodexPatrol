@@ -1872,6 +1872,8 @@ public sealed class RuntimeStore
         {
             settings.PriorityMinActiveCount = payload.PriorityMinActiveCount;
         }
+
+        settings.DisableCacheRefresh = payload.DisableCacheRefresh;
     }
 
     /// <summary>
