@@ -533,10 +533,14 @@ API 路由依赖：
 
 ### 复用缓存条件（`TryReuseQuota`）
 
+默认 `disableCacheRefresh = false` 时，巡检会优先根据 usage-queue 调用日志决定是否复用缓存。满足以下条件时可以复用：
+
 - 存在有效的额度快照
 - 所有窗口的额度未过期（未到 `resetAt` 时间）
 - 该账号自上次真实刷新后没有新的 API 调用活动
 - 未达到该账号分散后的强制真实刷新时间点
+
+当站点设置 `disableCacheRefresh = true` 时，会跳过缓存复用和禁用免费号跳过逻辑，每次巡检都发起真实请求。该模式仅用于 CPA 日志模块被禁用、无法通过 usage-queue 判断账号调用活动的场景。
 
 ### 跳过探测条件（`TrySkipDisabledFreeQuota`）
 
@@ -568,7 +572,9 @@ API 路由依赖：
 flowchart TD
     A[开始检查单个账号] --> B{forceRefresh?}
     B -- 是 --> H[发起真实请求]
-    B -- 否 --> C{达到账号级真实刷新窗口?}
+    B -- 否 --> B1{disableCacheRefresh?}
+    B1 -- 是 --> H
+    B1 -- 否 --> C{达到账号级真实刷新窗口?}
     C -- 是 --> H
     C -- 否 --> D{命中禁用免费号跳过?}
     D -- 是 --> D1[只更新 CheckedAt\n保留 RefreshedAt]

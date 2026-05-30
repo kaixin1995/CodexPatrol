@@ -185,6 +185,7 @@ public static class SettingsEndpoints
             Provider = settings.Provider,
             PriorityRoutingEnabled = settings.PriorityRoutingEnabled,
             PriorityMinActiveCount = settings.PriorityMinActiveCount,
+            DisableCacheRefresh = settings.DisableCacheRefresh,
         };
     }
 }

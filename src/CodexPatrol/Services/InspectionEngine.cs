@@ -195,6 +195,13 @@ public sealed class InspectionEngine
             return false;
         }
 
+        // 禁用缓存刷新时，直接跳过所有缓存判断，走真实请求。
+        if (settings.DisableCacheRefresh)
+        {
+            decision = null;
+            return false;
+        }
+
         var existingQuota = _store.GetQuota(file.Name, resolvedSiteId);
 
         // 命中账号级分散真实刷新窗口后强制走真实请求，保证每个非例外账号最多 10 小时至少真实检测一次。

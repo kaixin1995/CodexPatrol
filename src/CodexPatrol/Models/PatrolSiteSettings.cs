@@ -135,6 +135,14 @@ public sealed class PatrolSiteSettings
     public int PriorityMinActiveCount { get; set; } = 2;
 
     /// <summary>
+    /// 是否禁用缓存刷新策略，强制每次巡检都真实请求。
+    /// 默认 false（走缓存策略，根据 usage-queue 调用日志决定哪些账号刷新）。
+    /// 当日志模块被禁用导致读不到调用信息时，可设为 true 以保证额度数据准确。
+    /// </summary>
+    [JsonPropertyName("disableCacheRefresh")]
+    public bool DisableCacheRefresh { get; set; }
+
+    /// <summary>
     /// 浅拷贝当前站点配置，返回独立实例。
     /// </summary>
     public PatrolSiteSettings Clone()
@@ -162,6 +170,7 @@ public sealed class PatrolSiteSettings
             Provider = Provider,
             PriorityRoutingEnabled = PriorityRoutingEnabled,
             PriorityMinActiveCount = PriorityMinActiveCount,
+            DisableCacheRefresh = DisableCacheRefresh,
         };
     }
 }
