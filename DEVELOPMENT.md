@@ -154,11 +154,13 @@ CPA Management API 的 HTTP 客户端封装。
 | 方法 | 说明 |
 |---|---|
 | `ParseQuotaSnapshot()` | 主入口：将原始 JSON 解析为结构化的 `CodexQuotaSnapshot` |
-| `ClassifyWindows()` | 按 `limit_window_seconds` 区分 5 小时（18000s）/ 周（604800s）窗口 |
-| `NormalizePlanType()` | 归一化套餐类型（Free/Plus/Team/Pro/ProLite） |
-| `GetWeeklyUsedPercent()` | 获取周额度使用率 |
-| `GetFiveHourUsedPercent()` | 获取 5 小时额度使用率 |
-| `IsQuotaReached()` | 判断额度是否达到阈值 |
+| `ClassifyWindows()` | 按 `limit_window_seconds` 识别 5 小时（18000s）/ 周（604800s）窗口；仅在秒数缺失时按顺序回退推断，避免误贴标签 |
+| `GetEffectiveWindows()` | 获取当前账号实际生效的额度窗口集合，供巡检/统计/优先级逻辑统一复用 |
+| `GetPrimaryUsedPercent()` | 获取用于展示与排序的主额度使用率 |
+| `HasAnyWindowReachedThreshold()` | 判断任一实际返回窗口是否达到阈值 |
+| `AreAllEffectiveWindowsBelowThreshold()` | 判断所有实际返回窗口是否均低于阈值 |
+| `GetReachedWindows()` | 获取达到阈值且尚未重置的额度窗口 |
+| `IsQuotaReached()` | 判断额度是否达到限制 |
 | `FormatDuration()` | 格式化为中文时长（如"2天3小时后重置"） |
 
 #### `QuotaCachePolicy.cs`
@@ -168,7 +170,7 @@ CPA Management API 的 HTTP 客户端封装。
 | 方法 | 说明 |
 |---|---|
 | `TryReuseQuota()` | 满足条件时复用缓存：快照有效、无窗口过期、无新调用活动 |
-| `TrySkipDisabledFreeQuota()` | 已禁用免费号且周额度未重置时跳过探测 |
+| `TrySkipDisabledQuota()` | 已禁用且仍存在达到阈值、尚未重置的额度窗口时跳过探测 |
 | `GetScheduledRealRefreshAt()` | 根据 `(siteId, accountName)` 稳定计算账号进入真实刷新窗口的时间 |
 | `HasReachedScheduledRealRefreshAt()` | 判断账号是否已进入必须执行真实请求的时间窗口 |
 
@@ -498,16 +500,20 @@ API 路由依赖：
 
 核心决策逻辑位于 `InspectionEngine.ResolveDecision()`：
 
+当前实现不再先按“免费号 / 收费号”写死判断，而是优先读取账号实际返回的额度窗口：
+
+- 任一实际返回窗口达到阈值 → `Disable` / `Keep + QuotaExhausted`
+- 所有实际返回窗口都低于阈值 → 视为额度恢复，可进入启用/待命链路
+- 无额度窗口但整体响应仍标记已耗尽 → 继续按 `QuotaExhausted` 处理
+- 窗口标签优先根据 `limit_window_seconds` 识别；仅在秒数缺失时才按顺序回退推断，避免把长周期窗口误标为“5 小时限额”
+
 | 场景 | 当前决策 |
 |---|---|
 | `401` 响应 | `Delete`，账号失效 |
-| 免费号周额度 ≥ 阈值 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
-| 收费号周额度 ≥ 阈值 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
-| 收费号 5 小时额度 ≥ 阈值 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
-| 已禁用账号额度恢复，且优先级路由关闭 | `Enable`；免费号只看周额度，收费号需周额度和 5 小时额度都恢复 |
-| 已禁用账号额度恢复，且优先级路由开启 | `Keep + OrderedStandby`，等待优先级调度，不在巡检阶段直接启用 |
-| 免费号 5 小时额度 ≥ 阈值但周额度正常 | `Keep`，仅提示，不作为禁用依据 |
-| 无周额度数据但整体额度已耗尽 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
+| 任一实际返回额度窗口 ≥ 阈值 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
+| 已禁用账号所有实际返回额度窗口都恢复到阈值以下，且优先级路由关闭 | `Enable` |
+| 已禁用账号所有实际返回额度窗口都恢复到阈值以下，且优先级路由开启 | `Keep + OrderedStandby`，等待优先级调度，不在巡检阶段直接启用 |
+| 无额度窗口数据但整体额度已耗尽 | 未禁用 → `Disable`；已禁用 → `Keep + QuotaExhausted` |
 | 请求异常 / 其他正常场景 | `Keep`，容错或无需处理 |
 
 自动动作模式过滤（`FilterAutoActionItems`）：
@@ -542,12 +548,11 @@ API 路由依赖：
 
 当站点设置 `disableCacheRefresh = true` 时，会跳过缓存复用和禁用免费号跳过逻辑，每次巡检都发起真实请求。该模式仅用于 CPA 日志模块被禁用、无法通过 usage-queue 判断账号调用活动的场景。
 
-### 跳过探测条件（`TrySkipDisabledFreeQuota`）
+### 跳过探测条件（`TrySkipDisabledQuota`）
 
 - 账号已禁用
-- 套餐为 `Free`
-- 周额度使用率已达到阈值
-- 周额度尚未重置
+- 存在有效的历史额度快照
+- 当前仍有至少一个达到阈值且尚未到重置时间的额度窗口
 
 ### 强制真实刷新规则
 
@@ -576,7 +581,7 @@ flowchart TD
     B1 -- 是 --> H
     B1 -- 否 --> C{达到账号级真实刷新窗口?}
     C -- 是 --> H
-    C -- 否 --> D{命中禁用免费号跳过?}
+    C -- 否 --> D{命中禁用账号跳过?}
     D -- 是 --> D1[只更新 CheckedAt\n保留 RefreshedAt]
     D1 --> Z[进入额度决策]
     D -- 否 --> E{命中调用日志缓存?}
@@ -593,25 +598,21 @@ flowchart TD
 flowchart TD
     A[已拿到状态码与额度快照] --> B{401?}
     B -- 是 --> X[Delete 账号失效]
-    B -- 否 --> C{有周额度数据?}
-    C -- 是 --> D{周额度 >= 阈值?}
+    B -- 否 --> C{存在实际额度窗口?}
+    C -- 是 --> D{任一窗口 >= 阈值?}
     D -- 是 --> D1[Disable 或 Keep\nQuotaExhausted]
-    D -- 否 --> E{收费号且 5h >= 阈值?}
-    E -- 是 --> E1[Disable 或 Keep\nQuotaExhausted]
-    E -- 否 --> F{账号当前已禁用?}
-    F -- 是 --> G{优先级路由开启?}
-    G -- 是 --> G1[Keep + OrderedStandby]
-    G -- 否 --> G2[Enable]
-    F -- 否 --> H{免费号 5h >= 阈值?}
-    H -- 是 --> H1[Keep\n仅提示不禁用]
-    H -- 否 --> H2[Keep 无需处理]
-    C -- 否 --> J{整体额度已耗尽?}
-    J -- 是 --> J1[Disable 或 Keep\nQuotaExhausted]
-    J -- 否 --> K{200 且账号已禁用?}
-    K -- 是 --> L{优先级路由开启?}
-    L -- 是 --> L1[Keep + OrderedStandby]
-    L -- 否 --> L2[Enable]
-    K -- 否 --> H2
+    D -- 否 --> E{账号当前已禁用?}
+    E -- 是 --> F{优先级路由开启?}
+    F -- 是 --> F1[Keep + OrderedStandby]
+    F -- 否 --> F2[Enable]
+    E -- 否 --> G[Keep 无需处理]
+    C -- 否 --> H{整体额度已耗尽?}
+    H -- 是 --> H1[Disable 或 Keep\nQuotaExhausted]
+    H -- 否 --> I{200 且账号已禁用?}
+    I -- 是 --> J{优先级路由开启?}
+    J -- 是 --> J1[Keep + OrderedStandby]
+    J -- 否 --> J2[Enable]
+    I -- 否 --> G
 ```
 
 ### 时间字段推进流程
@@ -634,8 +635,8 @@ flowchart TD
     B -- 否 --> Z[结束 不做优先级调度]
     B -- 是 --> C{存在优先级配置?}
     C -- 否 --> Z
-    C -- 是 --> D[按优先级升序遍历账号\n跳过例外账号]
-    D --> E{周额度可用\n或暂无周额度数据?}
+    C -- 是 --> D[按优先级升序遍历账号\n跳过例外账号与待首检账号]
+    D --> E{所有实际返回窗口\n都低于阈值?}
     E -- 是 --> F[加入激活列表]
     E -- 否 --> G[跳过该账号]
     F --> H{激活列表达到 minActiveCount?}
@@ -643,7 +644,7 @@ flowchart TD
     H -- 是 --> I[遍历所有已配置优先级的账号]
     G --> D
     I --> J{账号在激活列表中?}
-    J -- 是 --> K{当前已禁用\n且原因为 OrderedStandby?}
+    J -- 是 --> K{当前已禁用?}
     K -- 是 --> L[调用 CPA 启用\n清除禁用原因]
     K -- 否 --> M[保持现状]
     J -- 否 --> N{当前未禁用\n且禁用原因为 None?}
@@ -698,16 +699,16 @@ flowchart TD
 
 1. 新发现账号会先追加到末尾并标记 `PendingFirstInspection = true`
 2. 待首检账号必须等下一次真实巡检拿到额度后，才会正式纳入自动排序
-3. 免费号按“剩余额度高优先”重排；等价于按周使用率从低到高排序
-4. 新免费号会插入到“最后一个仍未达到阈值的已有免费号”后面
-5. 已达到阈值的免费号会下沉到底部
-6. 收费号不按额度做重新排序
+3. 动态可用窗口按“主窗口使用率低优先”重排；当前实现主窗口优先取时长较短的窗口，便于更快让刚恢复的账号参与轮转
+4. 新账号会插入到“最后一个仍未达到阈值的已有可用账号”后面
+5. 已达到阈值的账号会下沉到底部
+6. 其他账号保持原有相对顺序
 7. 最终会重新编号为唯一的 `1..N`，不会出现重复优先级
 
 ### 核心调度逻辑（`AutoPollingService.ApplyPriorityRoutingAsync`）
 
 1. 按优先级升序遍历账号，跳过例外账号和待首检账号
-2. 免费号只看周额度，收费号需周额度和 5 小时额度都未达阈值，才算”可用账号”
+2. 只要当前账号实际返回的所有额度窗口都低于阈值，才算“可用账号”
 3. 收集可用账号直到达到 `minActiveCount`
 4. 进入 active 的禁用账号（不在例外名单）统一恢复启用，不区分之前的禁用原因
 5. 未进入 active 且当前启用的账号执行禁用并标记 `OrderedStandby`
@@ -724,7 +725,7 @@ flowchart TD
 ### 额度恢复流程
 
 1. 自动/手动巡检发现已禁用账号额度恢复 → 巡检引擎标记建议启用，优先级路由开启时交由调度统一处理
-2. 优先级路由按排列顺序从高到低遍历，选 active 集合（免费号只看周额度，收费号周额度和 5 小时额度都不能到阈值）
+2. 优先级路由按排列顺序从高到低遍历，选 active 集合（要求当前账号实际返回的所有额度窗口都低于阈值）
 3. 进入 active 集合的账号如果当前禁用且不在例外名单，统一恢复启用（不区分之前是 QuotaExhausted / OrderedStandby / ManualDisabled）
 4. 未进入 active 且当前启用的账号，会被置为待命禁用（OrderedStandby）
 5. 恢复的账号不会跳过中间排队的账号，严格按优先级顺序轮转
