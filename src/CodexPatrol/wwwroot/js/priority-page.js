@@ -25,17 +25,14 @@ function buildPriorityQuotaText(quota) {
     return '暂无额度';
   }
 
-  const weeklyWindow = getQuotaWindow(quota, 604800);
-  const fiveHourWindow = getQuotaWindow(quota, 18000);
-  const parts = [];
+  const windows = [...(quota.windows || [])]
+    .filter(window => Number(window.limitWindowSeconds) > 0)
+    .sort((left, right) => Number(right.limitWindowSeconds) - Number(left.limitWindowSeconds));
 
-  if (weeklyWindow) {
-    parts.push(`已用周额度 ${formatUsedPercent(weeklyWindow.usedPercent)}`);
-  }
-
-  if (!String(quota.planType || '').trim().toLowerCase().startsWith('free') && fiveHourWindow) {
-    parts.push(`已用 5 小时额度 ${formatUsedPercent(fiveHourWindow.usedPercent)}`);
-  }
+  const parts = windows.map(window => {
+    const label = String(window.label || '').trim() || `${window.limitWindowSeconds} 秒额度`;
+    return `已用${label} ${formatUsedPercent(window.usedPercent)}`;
+  });
 
   if (parts.length > 0) {
     return parts.join(' · ');

@@ -152,7 +152,7 @@ public sealed class QuotaCachePolicyTests
     }
 
     [Fact]
-    public void TrySkipDisabledFreeQuota_ShouldReuseCachedQuota_WhenWeeklyWindowNotReset()
+    public void TrySkipDisabledQuota_ShouldReuseCachedQuota_WhenReachedWindowNotReset()
     {
         var existing = CreateSnapshot(
             refreshedAt: new DateTime(2026, 5, 20, 8, 0, 0, DateTimeKind.Utc),
@@ -161,7 +161,7 @@ public sealed class QuotaCachePolicyTests
             weeklyUsedPercent: 100);
         var nowUtc = new DateTime(2026, 5, 20, 9, 0, 0, DateTimeKind.Utc);
 
-        var skipped = QuotaCachePolicy.TrySkipDisabledFreeQuota(
+        var skipped = QuotaCachePolicy.TrySkipDisabledQuota(
             existing,
             displayAccount: "display",
             disabled: true,
@@ -176,11 +176,11 @@ public sealed class QuotaCachePolicyTests
         Assert.Equal(nowUtc, snapshot.CheckedAt);
         Assert.Equal(existing.RefreshedAt, snapshot.RefreshedAt);
         Assert.Equal("Free", snapshot.PlanType);
-        Assert.Contains("命中禁用免费号跳过", reason);
+        Assert.Contains("命中禁用账号跳过", reason);
     }
 
     [Fact]
-    public void TrySkipDisabledFreeQuota_ShouldReturnFalse_WhenWeeklyThresholdNotReached()
+    public void TrySkipDisabledQuota_ShouldReturnFalse_WhenThresholdNotReached()
     {
         var existing = CreateSnapshot(
             refreshedAt: new DateTime(2026, 5, 20, 8, 0, 0, DateTimeKind.Utc),
@@ -189,7 +189,7 @@ public sealed class QuotaCachePolicyTests
             weeklyUsedPercent: 80);
         var nowUtc = new DateTime(2026, 5, 20, 9, 0, 0, DateTimeKind.Utc);
 
-        var skipped = QuotaCachePolicy.TrySkipDisabledFreeQuota(
+        var skipped = QuotaCachePolicy.TrySkipDisabledQuota(
             existing,
             displayAccount: "display",
             disabled: true,
@@ -200,7 +200,7 @@ public sealed class QuotaCachePolicyTests
 
         Assert.False(skipped);
         Assert.Null(snapshot);
-        Assert.Equal("周额度未达到停用阈值", reason);
+        Assert.Equal("没有达到阈值且未重置的额度窗口", reason);
     }
 
     private static CodexQuotaSnapshot CreateSnapshot(DateTime refreshedAt, DateTime resetAtUtc, string planType = "Plus", double weeklyUsedPercent = 50)

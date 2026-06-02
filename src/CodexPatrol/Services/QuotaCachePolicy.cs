@@ -118,9 +118,9 @@ public static class QuotaCachePolicy
     }
 
     /// <summary>
-    /// 已禁用且周额度未重置的免费号，直接沿用旧快照，避免本轮重复探测。
+    /// 已禁用且额度窗口未重置的账号，直接沿用旧快照，避免本轮重复探测。
     /// </summary>
-    public static bool TrySkipDisabledFreeQuota(
+    public static bool TrySkipDisabledQuota(
         CodexQuotaSnapshot? existing,
         string displayAccount,
         bool disabled,
@@ -149,28 +149,10 @@ public static class QuotaCachePolicy
             return false;
         }
 
-        if (!string.Equals(existing.PlanType, "Free", StringComparison.OrdinalIgnoreCase))
+        var reachedWindows = CodexQuotaParser.GetReachedWindows(existing, threshold, nowUtc);
+        if (reachedWindows.Count == 0)
         {
-            reason = "不是免费套餐";
-            return false;
-        }
-
-        var weeklyWindow = existing.Windows.FirstOrDefault(window => window.LimitWindowSeconds == WeekSeconds);
-        if (weeklyWindow is null)
-        {
-            reason = "缺少周额度窗口";
-            return false;
-        }
-
-        if (weeklyWindow.ResetAtUtc == DateTime.MinValue || weeklyWindow.ResetAtUtc <= nowUtc)
-        {
-            reason = "周额度已到重置时间";
-            return false;
-        }
-
-        if (!weeklyWindow.UsedPercent.HasValue || weeklyWindow.UsedPercent.Value < threshold)
-        {
-            reason = "周额度未达到停用阈值";
+            reason = "没有达到阈值且未重置的额度窗口";
             return false;
         }
 
@@ -180,7 +162,7 @@ public static class QuotaCachePolicy
             disabled,
             nowUtc,
             existing.LastUsageAt == DateTime.MinValue ? null : existing.LastUsageAt,
-            "命中禁用免费号跳过：周额度未重置，保持禁用");
+            "命中禁用账号跳过：额度窗口未重置，保持禁用");
         reason = snapshot.CacheReason;
         return true;
     }

@@ -221,8 +221,8 @@ public sealed class AutoPollingService : BackgroundService
             var account = warmupAccounts[index];
             var decision = await _engine.InspectAccountAsync(siteId, account, forceRefresh: true, ct: ct);
             var quota = _store.GetQuota(account.Name, siteId);
-            var weeklyUsedPercent = quota is null ? null : CodexQuotaParser.GetWeeklyUsedPercent(quota);
-            var weeklyText = weeklyUsedPercent.HasValue ? $"{weeklyUsedPercent.Value:0.##}%" : "未知";
+            var primaryUsedPercent = quota is null ? null : CodexQuotaParser.GetPrimaryUsedPercent(quota);
+            var primaryText = primaryUsedPercent.HasValue ? $"{primaryUsedPercent.Value:0.##}%" : "未知";
 
             _store.AddOperationLog(
                 "quota",
@@ -230,15 +230,15 @@ public sealed class AutoPollingService : BackgroundService
                 "system",
                 !string.IsNullOrWhiteSpace(decision.Error)
                     ? $"启动预热真实检测第 {index + 1} 个账号失败：{account.Name}，{decision.Error}"
-                    : $"启动预热真实检测第 {index + 1} 个账号完成：{account.Name}，周额度 {weeklyText}，阈值 {settings.UsedPercentThreshold}%",
+                    : $"启动预热真实检测第 {index + 1} 个账号完成：{account.Name}，主额度 {primaryText}，阈值 {settings.UsedPercentThreshold}%",
                 string.IsNullOrWhiteSpace(decision.Error) ? "info" : "warning",
                 account.Name,
                 decision.DisplayAccount,
                 siteId);
 
-            if (weeklyUsedPercent.HasValue && weeklyUsedPercent.Value < settings.UsedPercentThreshold)
+            if (quota is not null && CodexQuotaParser.AreAllEffectiveWindowsBelowThreshold(quota, settings.UsedPercentThreshold))
             {
-                _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测停止：账号 {account.Name} 周额度 {weeklyText} 未达到阈值 {settings.UsedPercentThreshold}%", siteId: siteId);
+                _store.AddOperationLog("quota", "startupWarmup", "system", $"启动预热真实检测停止：账号 {account.Name} 主额度 {primaryText} 未达到阈值 {settings.UsedPercentThreshold}%", siteId: siteId);
                 return;
             }
         }
@@ -772,7 +772,7 @@ public sealed class AutoPollingService : BackgroundService
     }
 
     /// <summary>
-    /// 枚举需要跟踪重置检测时间的额度窗口：免费号只看周限额，收费号同时看周限额和 5 小时限额。
+    /// 枚举需要跟踪重置检测时间的额度窗口：按实际返回且达到阈值的窗口动态判断。
     /// </summary>
     private static IEnumerable<CodexQuotaWindowSnapshot> EnumerateTrackedResetWindows(CodexQuotaSnapshot? quota, int threshold)
     {
@@ -781,29 +781,9 @@ public sealed class AutoPollingService : BackgroundService
             yield break;
         }
 
-        var isFreePlan = string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
-        foreach (var window in quota.Windows)
+        foreach (var window in CodexQuotaParser.GetReachedWindows(quota, threshold, DateTime.UtcNow))
         {
-            if (window.ResetAtUtc == DateTime.MinValue)
-            {
-                continue;
-            }
-
-            if (!window.UsedPercent.HasValue || window.UsedPercent.Value < threshold)
-            {
-                continue;
-            }
-
-            if (window.LimitWindowSeconds == WeekSeconds)
-            {
-                if (window.LastResetHandledAt < ResolveResetCheckAt(window))
-                {
-                    yield return window;
-                }
-                continue;
-            }
-
-            if (!isFreePlan && window.LimitWindowSeconds == FiveHourSeconds && window.LastResetHandledAt < ResolveResetCheckAt(window))
+            if (window.LastResetHandledAt < ResolveResetCheckAt(window))
             {
                 yield return window;
             }
@@ -925,14 +905,7 @@ public sealed class AutoPollingService : BackgroundService
             }
 
             var quota = _store.GetQuota(priority.Name, siteId);
-            var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
-
-            // 收费号需要同时满足周额度和 5 小时额度都未达阈值才能作为 active。
-            var isPaidAccount = quota != null && !string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
-            var paidFiveHourOverThreshold = isPaidAccount
-                && quota!.Windows.Any(w => w.LimitWindowSeconds == 18000 && w.UsedPercent >= settings.UsedPercentThreshold);
-
-            var isUsable = weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold && !paidFiveHourOverThreshold;
+            var isUsable = quota != null && CodexQuotaParser.AreAllEffectiveWindowsBelowThreshold(quota, settings.UsedPercentThreshold);
 
             if (isUsable)
             {

@@ -204,21 +204,8 @@ function isFreePlan(quota) {
 
 function isQuotaExhausted(quota) {
   if (!quota?.success) return false;
-
-  const weeklyWindow = getQuotaWindow(quota, 604800);
-  if (!weeklyWindow || !Number.isFinite(Number(weeklyWindow.usedPercent))) {
-    return false;
-  }
-
-  if (Number(weeklyWindow.usedPercent) >= cachedUsedPercentThreshold) {
-    return true;
-  }
-
-  const fiveHourWindow = getQuotaWindow(quota, 18000);
-  return !isFreePlan(quota)
-    && fiveHourWindow
-    && Number.isFinite(Number(fiveHourWindow.usedPercent))
-    && Number(fiveHourWindow.usedPercent) >= cachedUsedPercentThreshold;
+  const windows = (quota.windows || []).filter(window => Number.isFinite(Number(window.usedPercent)) && Number(window.limitWindowSeconds) > 0);
+  return windows.some(window => Number(window.usedPercent) >= cachedUsedPercentThreshold);
 }
 
 function renderQuotaAvailabilitySummary() {
@@ -251,7 +238,7 @@ function renderQuotaAvailabilitySummary() {
       <div class="stat-card"><div class="stat-value">${exhaustedCount}</div><div class="stat-label">额度耗尽账号</div></div>
       <div class="stat-card"><div class="stat-value">${unknownCount}</div><div class="stat-label">未知额度账号</div></div>
     </div>
-    <p class="hint" style="margin:8px 0 0">统计只按额度判断，与账号启用/禁用状态无关；免费号看周额度，收费号看周额度和 5 小时额度。</p>
+    <p class="hint" style="margin:8px 0 0">统计只按额度判断，与账号启用/禁用状态无关；会按当前账号实际返回的额度窗口动态判断是否可用或耗尽。</p>
   `;
 }
 

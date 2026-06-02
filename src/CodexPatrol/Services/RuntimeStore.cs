@@ -498,13 +498,12 @@ public sealed class RuntimeStore
 
                 var wasPending = entry.PendingFirstInspection;
                 var quota = state.Quotas.TryGetValue(entry.Name, out var snapshot) ? snapshot : null;
-                var isFreePlan = string.Equals(quota?.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
-                var weeklyPercent = quota is not null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
-                var isFreeExhausted = isFreePlan && weeklyPercent.HasValue && weeklyPercent.Value >= threshold;
+                var primaryPercent = quota is not null ? CodexQuotaParser.GetPrimaryUsedPercent(quota) : null;
+                var isExhausted = quota is not null && CodexQuotaParser.HasAnyWindowReachedThreshold(quota, threshold);
 
                 if (wasPending && inspected.Contains(entry.Name))
                 {
-                    if (isFreePlan && !weeklyPercent.HasValue)
+                    if (primaryPercent is null)
                     {
                         pendingUninspected.Add(CloneAccountPriority(entry));
                         continue;
@@ -519,7 +518,7 @@ public sealed class RuntimeStore
                     continue;
                 }
 
-                if (isFreeExhausted)
+                if (isExhausted)
                 {
                     bottomEntries.Add(CloneAccountPriority(entry));
                     continue;
@@ -527,9 +526,9 @@ public sealed class RuntimeStore
 
                 if (wasPending)
                 {
-                    if (isFreePlan && weeklyPercent.HasValue)
+                    if (primaryPercent.HasValue)
                     {
-                        newFreeEntries.Add((CloneAccountPriority(entry), weeklyPercent.Value));
+                        newFreeEntries.Add((CloneAccountPriority(entry), primaryPercent.Value));
                     }
                     else
                     {
@@ -544,14 +543,12 @@ public sealed class RuntimeStore
 
             var insertAfterIndex = baseline.FindLastIndex(entry =>
             {
-                if (!state.Quotas.TryGetValue(entry.Name, out var quota)
-                    || !string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase))
+                if (!state.Quotas.TryGetValue(entry.Name, out var quota))
                 {
                     return false;
                 }
 
-                var weeklyPercent = CodexQuotaParser.GetWeeklyUsedPercent(quota);
-                return weeklyPercent.HasValue && weeklyPercent.Value < threshold;
+                return CodexQuotaParser.AreAllEffectiveWindowsBelowThreshold(quota, threshold);
             });
 
             var finalOrder = new List<AccountPriority>();

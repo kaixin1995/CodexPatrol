@@ -506,14 +506,7 @@ public static class InspectionEndpoints
             if (account == null) continue;
 
             var quota = store.GetQuota(priority.Name, siteId);
-            var weeklyPercent = quota != null ? CodexQuotaParser.GetWeeklyUsedPercent(quota) : null;
-
-            // 收费号需要同时满足周额度和 5 小时额度都未达阈值才能作为 active。
-            var isPaidAccount = quota != null && !string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
-            var paidFiveHourOverThreshold = isPaidAccount
-                && quota!.Windows.Any(w => w.LimitWindowSeconds == 18000 && w.UsedPercent >= settings.UsedPercentThreshold);
-
-            var isUsable = weeklyPercent.HasValue && weeklyPercent.Value < settings.UsedPercentThreshold && !paidFiveHourOverThreshold;
+            var isUsable = quota != null && CodexQuotaParser.AreAllEffectiveWindowsBelowThreshold(quota, settings.UsedPercentThreshold);
 
             if (isUsable)
             {

@@ -574,7 +574,7 @@ public sealed class SettingsPersistenceTests
 
             Assert.Equal(InspectionAction.Disable, decision.Action);
             Assert.Equal(DisableReason.QuotaExhausted, decision.DisableReason);
-            Assert.Contains("5 小时额度达到阈值", decision.Reason);
+            Assert.Contains("5 小时限额", decision.Reason);
             Assert.Equal(100, decision.UsedPercent);
         }
         finally
@@ -634,7 +634,7 @@ public sealed class SettingsPersistenceTests
 
             Assert.Equal(InspectionAction.Keep, decision.Action);
             Assert.Equal(DisableReason.QuotaExhausted, decision.DisableReason);
-            Assert.Contains("5 小时额度达到阈值，但账号已禁用", decision.Reason);
+            Assert.Contains("5 小时限额", decision.Reason);
         }
         finally
         {
@@ -693,7 +693,7 @@ public sealed class SettingsPersistenceTests
 
             Assert.Equal(InspectionAction.Enable, decision.Action);
             Assert.Equal(DisableReason.None, decision.DisableReason);
-            Assert.Contains("周额度和 5 小时额度均可用", decision.Reason);
+            Assert.Contains("均可用", decision.Reason);
         }
         finally
         {
@@ -1474,7 +1474,7 @@ public sealed class SettingsPersistenceTests
             await InvokeWarmupStartupQuotasAsync(service, "default", settings, accounts, CancellationToken.None);
 
             Assert.Equal(1, handler.RequestCount);
-            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测停止：账号 account-a 周额度 80% 未达到阈值 95%"));
+            Assert.Contains(store.GetOperationLogs(200, "default"), item => item.Message.Contains("启动预热真实检测停止：账号 account-a 主额度 80% 未达到阈值 95%"));
         }
         finally
         {
@@ -1978,7 +1978,7 @@ public sealed class SettingsPersistenceTests
 
             Assert.True(changed);
             Assert.Equal(
-                ["free-1", "new-free-high", "new-free-low", "new-paid", "paid-1", "free-2"],
+                ["free-1", "paid-1", "new-paid", "new-free-high", "new-free-low", "free-2"],
                 priorities.Select(priority => priority.Name).ToArray());
             Assert.Equal([1, 2, 3, 4, 5, 6], priorities.Select(priority => priority.Priority).ToArray());
             Assert.All(

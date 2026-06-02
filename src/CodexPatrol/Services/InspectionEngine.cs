@@ -211,8 +211,8 @@ public sealed class InspectionEngine
             return false;
         }
 
-        // 已禁用的免费账号，如果周额度未重置则跳过本轮检查。
-        if (QuotaCachePolicy.TrySkipDisabledFreeQuota(
+        // 已禁用且额度窗口仍未重置的账号，直接沿用旧快照，避免本轮重复探测。
+        if (QuotaCachePolicy.TrySkipDisabledQuota(
             existingQuota,
             displayAccount,
             file.Disabled,
@@ -223,7 +223,7 @@ public sealed class InspectionEngine
         {
             _store.SetQuota(file.Name, skippedQuota!, resolvedSiteId);
             var skippedDecision = ResolveDecision(file, skippedQuota!.StatusCode, skippedQuota, settings.UsedPercentThreshold, resolvedSiteId);
-            skippedDecision.Reason = "免费账号已禁用，且周额度未重置，跳过本轮检查";
+            skippedDecision.Reason = "账号已禁用，且额度窗口未重置，跳过本轮检查";
             skippedDecision.CheckedAt = nowUtc;
             decision = skippedDecision;
             return true;
@@ -577,97 +577,51 @@ public sealed class InspectionEngine
         string? siteId = null)
     {
         var displayAccount = ResolveDisplayAccount(file);
-        var weeklyPercent = CodexQuotaParser.GetWeeklyUsedPercent(quota);
-        var fiveHourPercent = CodexQuotaParser.GetFiveHourUsedPercent(quota);
+        var primaryPercent = CodexQuotaParser.GetPrimaryUsedPercent(quota);
+        var anyWindowOverThreshold = CodexQuotaParser.HasAnyWindowReachedThreshold(quota, threshold);
+        var allWindowsBelowThreshold = CodexQuotaParser.AreAllEffectiveWindowsBelowThreshold(quota, threshold);
+        var effectiveWindows = CodexQuotaParser.GetEffectiveWindows(quota);
+        var effectiveWindowLabels = effectiveWindows.Select(window => window.Label).Where(label => !string.IsNullOrWhiteSpace(label)).ToList();
+        var joinedWindowLabels = effectiveWindowLabels.Count > 0 ? string.Join("、", effectiveWindowLabels) : "额度窗口";
         var isQuotaReached = CodexQuotaParser.IsQuotaReached(quota);
-        var weeklyOverThreshold = weeklyPercent.HasValue && weeklyPercent.Value >= threshold;
-        var fiveHourOverThreshold = fiveHourPercent.HasValue && fiveHourPercent.Value >= threshold;
-        var isFreePlan = string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase);
-        var paidFiveHourOverThreshold = !isFreePlan && fiveHourOverThreshold;
-
-        // 获取优先级路由状态
         var priorityRoutingEnabled = siteId != null && _store.GetSettings(siteId).PriorityRoutingEnabled;
 
-        // 401 表示认证失效，建议删除。
-        if (statusCode == 401)
+        // 有动态额度窗口数据时，按实际返回窗口判断禁用/启用。
+        if (effectiveWindows.Count > 0)
         {
-            return new InspectionDecision
-            {
-                AccountName = file.Name,
-                DisplayAccount = displayAccount,
-                AuthIndex = file.Auth_Index ?? file.AuthIndex ?? "",
-                Action = InspectionAction.Delete,
-                Reason = "接口返回 401，建议删除失效账号",
-                StatusCode = statusCode,
-                UsedPercent = weeklyPercent,
-                IsQuotaReached = false,
-                Disabled = file.Disabled,
-                DisableReason = DisableReason.ErrorDisabled,
-            };
-        }
-
-        // 有周额度数据时，按阈值判断禁用/启用。
-        if (weeklyPercent.HasValue)
-        {
-            if (weeklyOverThreshold)
+            if (anyWindowOverThreshold)
             {
                 if (file.Disabled)
                 {
                     return BuildDecision(file, InspectionAction.Keep,
-                        "周额度达到阈值，但账号已禁用", statusCode, weeklyPercent, true,
+                        $"{joinedWindowLabels}达到阈值，但账号已禁用", statusCode, primaryPercent, true,
                         DisableReason.QuotaExhausted);
                 }
                 return BuildDecision(file, InspectionAction.Disable,
-                    "周额度达到阈值，建议禁用账号", statusCode, weeklyPercent, true,
+                    $"{joinedWindowLabels}达到阈值，建议禁用账号", statusCode, primaryPercent, true,
                     DisableReason.QuotaExhausted);
             }
 
-            // 收费号任一限额到阈值都需要禁用；5 小时限额恢复后再按常规恢复链路重新启用。
-            if (paidFiveHourOverThreshold)
-            {
-                if (file.Disabled)
-                {
-                    return BuildDecision(file, InspectionAction.Keep,
-                        "5 小时额度达到阈值，但账号已禁用", statusCode, fiveHourPercent, true,
-                        DisableReason.QuotaExhausted);
-                }
-                return BuildDecision(file, InspectionAction.Disable,
-                    "收费号 5 小时额度达到阈值，建议禁用账号", statusCode, fiveHourPercent, true,
-                    DisableReason.QuotaExhausted);
-            }
-
-            // 周额度和 5 小时额度都可用且账号已禁用。
             if (file.Disabled)
             {
                 if (priorityRoutingEnabled)
                 {
-                    // 优先级路由开启时不直接启用，由优先级调度统一处理。
                     return BuildDecision(file, InspectionAction.Keep,
-                        "额度可用，但优先级路由开启，等待优先级调度", statusCode, weeklyPercent, false,
+                        "额度可用，但优先级路由开启，等待优先级调度", statusCode, primaryPercent, false,
                         DisableReason.OrderedStandby);
                 }
 
                 return BuildDecision(file, InspectionAction.Enable,
-                    isFreePlan
-                        ? "周额度仍可用，建议立即启用账号"
-                        : "周额度和 5 小时额度均可用，建议立即启用账号",
-                    statusCode, weeklyPercent, false);
-            }
-
-            if (fiveHourOverThreshold)
-            {
-                return BuildDecision(file, InspectionAction.Keep,
-                    "5 小时额度达到阈值，但免费号仅按周额度处理，暂不禁用账号",
-                    statusCode, weeklyPercent, false);
+                    $"{joinedWindowLabels}均可用，建议立即启用账号",
+                    statusCode, primaryPercent, false);
             }
 
             return BuildDecision(file, InspectionAction.Keep,
-                "周额度仍可用，无需处理", statusCode, weeklyPercent, false);
+                $"{joinedWindowLabels}仍可用，无需处理", statusCode, primaryPercent, false);
         }
 
-        // 无周额度数据但有额度耗尽标记时，按耗尽处理。
-        var overThreshold = isQuotaReached;
-        if (isQuotaReached || overThreshold)
+        // 无额度窗口数据但有额度耗尽标记时，按耗尽处理。
+        if (isQuotaReached)
         {
             if (file.Disabled)
             {

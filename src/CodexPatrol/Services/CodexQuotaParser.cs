@@ -66,10 +66,10 @@ public static class CodexQuotaParser
                 weekly = window;
         }
 
-        // 回退：按顺序假设 primary=5h, secondary=weekly
-        if (fiveHour is null && primary is not null && primary != weekly)
+        // 仅在缺少 limit_window_seconds 时，才按顺序回退推断窗口类型，避免把长周期窗口误标为 5 小时窗口。
+        if (fiveHour is null && primary is not null && primary != weekly && !GetWindowSeconds(primary).HasValue)
             fiveHour = primary;
-        if (weekly is null && secondary is not null && secondary != fiveHour)
+        if (weekly is null && secondary is not null && secondary != fiveHour && !GetWindowSeconds(secondary).HasValue)
             weekly = secondary;
 
         return (fiveHour, weekly);
@@ -270,6 +270,58 @@ public static class CodexQuotaParser
         }
 
         return snapshot;
+    }
+
+    /// <summary>
+    /// 获取动态生效的额度窗口，按窗口时长从长到短排序。
+    /// </summary>
+    public static List<CodexQuotaWindowSnapshot> GetEffectiveWindows(CodexQuotaSnapshot snapshot)
+    {
+        return snapshot.Windows
+            .Where(window => window.UsedPercent.HasValue && window.LimitWindowSeconds > 0)
+            .OrderByDescending(window => window.LimitWindowSeconds)
+            .ThenBy(window => window.Label ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 获取动态生效额度窗口中的最高使用率。
+    /// </summary>
+    public static double? GetPrimaryUsedPercent(CodexQuotaSnapshot snapshot)
+    {
+        return GetEffectiveWindows(snapshot)
+            .Select(window => window.UsedPercent)
+            .LastOrDefault();
+    }
+
+    /// <summary>
+    /// 判断当前额度窗口中是否有任意一个达到阈值。
+    /// </summary>
+    public static bool HasAnyWindowReachedThreshold(CodexQuotaSnapshot snapshot, int threshold)
+    {
+        return GetEffectiveWindows(snapshot)
+            .Any(window => window.UsedPercent.HasValue && window.UsedPercent.Value >= threshold);
+    }
+
+    /// <summary>
+    /// 判断当前额度窗口中是否所有窗口都低于阈值。
+    /// </summary>
+    public static bool AreAllEffectiveWindowsBelowThreshold(CodexQuotaSnapshot snapshot, int threshold)
+    {
+        var windows = GetEffectiveWindows(snapshot);
+        return windows.Count > 0 && windows.All(window => window.UsedPercent!.Value < threshold);
+    }
+
+    /// <summary>
+    /// 获取当前达到阈值且尚未到重置时间的额度窗口。
+    /// </summary>
+    public static List<CodexQuotaWindowSnapshot> GetReachedWindows(CodexQuotaSnapshot snapshot, int threshold, DateTime nowUtc)
+    {
+        return GetEffectiveWindows(snapshot)
+            .Where(window => window.ResetAtUtc != DateTime.MinValue
+                && window.ResetAtUtc > nowUtc
+                && window.UsedPercent!.Value >= threshold)
+            .ToList();
     }
 
     /// <summary>
