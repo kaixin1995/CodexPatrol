@@ -61,7 +61,7 @@ function renderPage() {
           <div class="form-row">
             <div class="form-group">
               <label>轮询间隔 (分钟)</label>
-              <input type="number" id="set-interval" min="5" value="10">
+              <input type="number" id="set-interval" min="1" value="10">
             </div>
             <div class="form-group">
               <label>自动动作模式</label>

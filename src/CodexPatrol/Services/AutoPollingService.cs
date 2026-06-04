@@ -894,7 +894,7 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     private static DateTime BuildNextRunAt(PatrolSiteSettings settings, DateTime nowUtc)
     {
-        var interval = TimeSpan.FromMinutes(Math.Max(5, settings.PollIntervalMinutes));
+        var interval = TimeSpan.FromMinutes(Math.Max(1, settings.PollIntervalMinutes));
         var randomDelayMinMinutes = Math.Max(0, settings.PollRandomDelayMinMinutes);
         var randomDelayMaxMinutes = Math.Max(randomDelayMinMinutes, settings.PollRandomDelayMaxMinutes);
         var randomDelayMinutes = Random.Shared.Next(randomDelayMinMinutes, randomDelayMaxMinutes + 1);

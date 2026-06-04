@@ -1797,7 +1797,7 @@ public sealed class RuntimeStore
             settings.ManagementKey = payload.ManagementKey.Trim();
         }
 
-        if (payload.PollIntervalMinutes >= 5)
+        if (payload.PollIntervalMinutes >= 1)
         {
             settings.PollIntervalMinutes = payload.PollIntervalMinutes;
         }
@@ -2014,7 +2014,7 @@ public sealed class RuntimeStore
         settings.SiteId = string.IsNullOrWhiteSpace(settings.SiteId) ? "default" : settings.SiteId.Trim();
         settings.Name = string.IsNullOrWhiteSpace(settings.Name) ? settings.SiteId : settings.Name.Trim();
         settings.Provider = string.IsNullOrWhiteSpace(settings.Provider) ? "codex" : settings.Provider.Trim();
-        settings.PollIntervalMinutes = Math.Max(5, settings.PollIntervalMinutes);
+        settings.PollIntervalMinutes = Math.Max(1, settings.PollIntervalMinutes);
         settings.PollRandomDelayMinMinutes = Math.Max(0, settings.PollRandomDelayMinMinutes);
         settings.PollRandomDelayMaxMinutes = Math.Max(settings.PollRandomDelayMinMinutes, settings.PollRandomDelayMaxMinutes);
         settings.ProbeWorkers = Math.Max(1, settings.ProbeWorkers);

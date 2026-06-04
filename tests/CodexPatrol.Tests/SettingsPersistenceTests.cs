@@ -782,6 +782,44 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public void ApplySettings_ShouldAllowOneMinutePollIntervalAndZeroRandomDelay()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            store.ApplySettings(new SaveSettingsRequest
+            {
+                SiteId = "default",
+                SiteName = "默认站点",
+                SiteEnabled = true,
+                CpaBaseUrl = "http://test",
+                ManagementKey = "key",
+                PollIntervalMinutes = 1,
+                PollRandomDelayMinMinutes = 0,
+                PollRandomDelayMaxMinutes = 0,
+                ProbeWorkers = 3,
+                ProbeBatchDelayMinMs = 2000,
+                ProbeBatchDelayMaxMs = 3000,
+                ActionWorkers = 4,
+                TimeoutMs = 15000,
+                RetryCount = 0,
+                AutoActionMode = "none",
+                UsedPercentThreshold = 95,
+            });
+
+            var reloaded = CreateStore(baseDirectory, BuildLegacyDefaults()).GetSettings();
+            Assert.Equal(1, reloaded.PollIntervalMinutes);
+            Assert.Equal(0, reloaded.PollRandomDelayMinMinutes);
+            Assert.Equal(0, reloaded.PollRandomDelayMaxMinutes);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
     public void BuildNextRunAt_ShouldUseBaseInterval_WhenRandomRangeIsZero()
     {
         var settings = new PatrolSiteSettings
