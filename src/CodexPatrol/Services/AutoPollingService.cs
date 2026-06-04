@@ -38,6 +38,11 @@ public sealed class AutoPollingService : BackgroundService
     private static readonly TimeSpan ResetCheckDelay = TimeSpan.FromMinutes(1);
 
     /// <summary>
+    /// 免费号仅返回单个 5 小时窗口时，如果上游返回的重置时间超过 5 小时，则按 5 小时保护复查。
+    /// </summary>
+    private static readonly TimeSpan FreeSingleFiveHourResetProtectionThreshold = TimeSpan.FromHours(5);
+
+    /// <summary>
     /// CPA 客户端，用于优先级路由时执行启用/禁用操作。
     /// </summary>
     private readonly CpaClient _cpa;
@@ -750,8 +755,8 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     private static DateTime ResolveReachedResetCheckAt(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
     {
-        return EnumerateTrackedResetWindows(quota, threshold)
-            .Select(window => ResolveResetCheckAt(window))
+        return EnumerateTrackedResetWindows(quota, threshold, nowUtc)
+            .Select(window => ResolveResetCheckAt(quota, window, nowUtc))
             .Where(resetCheckAt => resetCheckAt <= nowUtc)
             .OrderBy(resetCheckAt => resetCheckAt)
             .FirstOrDefault();
@@ -762,8 +767,8 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     private static DateTime? ResolveUpcomingResetCheckAt(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
     {
-        var nextResetCheckAt = EnumerateTrackedResetWindows(quota, threshold)
-            .Select(window => ResolveResetCheckAt(window))
+        var nextResetCheckAt = EnumerateTrackedResetWindows(quota, threshold, nowUtc)
+            .Select(window => ResolveResetCheckAt(quota, window, nowUtc))
             .Where(resetCheckAt => resetCheckAt > nowUtc)
             .OrderBy(resetCheckAt => resetCheckAt)
             .FirstOrDefault();
@@ -774,16 +779,16 @@ public sealed class AutoPollingService : BackgroundService
     /// <summary>
     /// 枚举需要跟踪重置检测时间的额度窗口：按实际返回且达到阈值的窗口动态判断。
     /// </summary>
-    private static IEnumerable<CodexQuotaWindowSnapshot> EnumerateTrackedResetWindows(CodexQuotaSnapshot? quota, int threshold)
+    private static IEnumerable<CodexQuotaWindowSnapshot> EnumerateTrackedResetWindows(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
     {
         if (quota is null || !quota.Success)
         {
             yield break;
         }
 
-        foreach (var window in CodexQuotaParser.GetReachedWindows(quota, threshold, DateTime.UtcNow))
+        foreach (var window in CodexQuotaParser.GetReachedWindows(quota, threshold, nowUtc))
         {
-            if (window.LastResetHandledAt < ResolveResetCheckAt(window))
+            if (window.LastResetHandledAt < ResolveResetCheckAt(quota, window, nowUtc))
             {
                 yield return window;
             }
@@ -795,9 +800,9 @@ public sealed class AutoPollingService : BackgroundService
     /// </summary>
     private static void MarkReachedResetWindowsHandled(CodexQuotaSnapshot? quota, int threshold, DateTime nowUtc)
     {
-        foreach (var window in EnumerateTrackedResetWindows(quota, threshold))
+        foreach (var window in EnumerateTrackedResetWindows(quota, threshold, nowUtc))
         {
-            var resetCheckAt = ResolveResetCheckAt(window);
+            var resetCheckAt = ResolveResetCheckAt(quota, window, nowUtc);
             if (resetCheckAt <= nowUtc)
             {
                 window.LastResetHandledAt = nowUtc;
@@ -808,9 +813,38 @@ public sealed class AutoPollingService : BackgroundService
     /// <summary>
     /// 计算单个额度窗口对应的重置检测时间。
     /// </summary>
-    private static DateTime ResolveResetCheckAt(CodexQuotaWindowSnapshot window)
+    private static DateTime ResolveResetCheckAt(CodexQuotaSnapshot? quota, CodexQuotaWindowSnapshot window, DateTime nowUtc)
     {
+        if (quota is not null && ShouldUseSingleFiveHourWindowProtection(quota, window, nowUtc))
+        {
+            return nowUtc + TimeSpan.FromSeconds(window.LimitWindowSeconds ?? FiveHourSeconds) + ResetCheckDelay;
+        }
+
         return window.ResetAtUtc + ResetCheckDelay;
+    }
+
+    /// <summary>
+    /// 免费号只有单个 5 小时窗口，且上游返回重置时间超过 5 小时时，按 5 小时保护复查。
+    /// </summary>
+    private static bool ShouldUseSingleFiveHourWindowProtection(CodexQuotaSnapshot quota, CodexQuotaWindowSnapshot window, DateTime nowUtc)
+    {
+        if (!string.Equals(quota.PlanType, "Free", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (window.LimitWindowSeconds != FiveHourSeconds || window.ResetAtUtc == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        var effectiveWindows = CodexQuotaParser.GetEffectiveWindows(quota);
+        if (effectiveWindows.Count != 1)
+        {
+            return false;
+        }
+
+        return window.ResetAtUtc - nowUtc >= FreeSingleFiveHourResetProtectionThreshold;
     }
 
     /// <summary>

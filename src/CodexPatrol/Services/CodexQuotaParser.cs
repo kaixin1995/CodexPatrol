@@ -52,11 +52,12 @@ public static class CodexQuotaParser
     {
         var primary = limitInfo?.Primary_Window ?? limitInfo?.PrimaryWindow;
         var secondary = limitInfo?.Secondary_Window ?? limitInfo?.SecondaryWindow;
+        var directWindows = limitInfo?.Windows ?? [];
 
         CodexUsageWindow? fiveHour = null;
         CodexUsageWindow? weekly = null;
 
-        foreach (var window in new[] { primary, secondary })
+        foreach (var window in new[] { primary, secondary }.Concat(directWindows))
         {
             if (window is null) continue;
             var seconds = GetWindowSeconds(window);
@@ -72,7 +73,58 @@ public static class CodexQuotaParser
         if (weekly is null && secondary is not null && secondary != fiveHour && !GetWindowSeconds(secondary).HasValue)
             weekly = secondary;
 
+        // 兜底：如果只有直接 windows 且仍未识别出标准窗口，则保留第一个有效窗口为主窗口，避免成功响应却完全无窗口可展示。
+        if (fiveHour is null && weekly is null)
+        {
+            var fallbackWindow = directWindows.FirstOrDefault(window => window is not null);
+            if (fallbackWindow is not null)
+            {
+                fiveHour = fallbackWindow;
+            }
+        }
+
         return (fiveHour, weekly);
+    }
+
+    /// <summary>
+    /// 将窗口秒数格式化为可读标签。
+    /// </summary>
+    private static string FormatWindowLabel(double? seconds)
+    {
+        if (!seconds.HasValue || seconds.Value <= 0)
+        {
+            return "额度窗口";
+        }
+
+        if (Math.Abs(seconds.Value - FiveHourSeconds) < 0.1)
+        {
+            return "5 小时限额";
+        }
+
+        if (Math.Abs(seconds.Value - WeekSeconds) < 0.1)
+        {
+            return "周限额";
+        }
+
+        if (Math.Abs(seconds.Value - 2_592_000) < 0.1)
+        {
+            return "月限额";
+        }
+
+        var span = TimeSpan.FromSeconds(seconds.Value);
+        if (span.TotalDays >= 1)
+        {
+            var days = Math.Round(span.TotalDays, 1);
+            return days % 1 == 0 ? $"{days:0} 天限额" : $"{days:0.#} 天限额";
+        }
+
+        if (span.TotalHours >= 1)
+        {
+            var hours = Math.Round(span.TotalHours, 1);
+            return hours % 1 == 0 ? $"{hours:0} 小时限额" : $"{hours:0.#} 小时限额";
+        }
+
+        return $"{Math.Round(seconds.Value)} 秒限额";
     }
 
     /// <summary>
@@ -167,6 +219,51 @@ public static class CodexQuotaParser
     }
 
     /// <summary>
+    /// 将限额信息中的所有有效窗口转成快照。
+    /// </summary>
+    private static List<CodexQuotaWindowSnapshot> BuildAllWindowSnapshots(
+        string idPrefix,
+        string labelPrefix,
+        CodexRateLimitInfo limitInfo)
+    {
+        var windows = new List<CodexQuotaWindowSnapshot>();
+        var limitReached = limitInfo.Limit_Reached ?? limitInfo.LimitReached;
+        var allowed = limitInfo.Allowed;
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void TryAddWindow(string slotName, CodexUsageWindow? window)
+        {
+            if (window is null)
+            {
+                return;
+            }
+
+            var seconds = GetWindowSeconds(window);
+            var usedPercent = GetUsedPercent(window);
+            var resetAtUtc = ResolveResetAtUtc(window);
+            var key = $"{seconds:0.###}|{usedPercent:0.###}|{resetAtUtc:o}";
+            if (!seenKeys.Add(key))
+            {
+                return;
+            }
+
+            var label = string.IsNullOrWhiteSpace(labelPrefix)
+                ? FormatWindowLabel(seconds)
+                : $"{labelPrefix} {FormatWindowLabel(seconds)}";
+            windows.Add(BuildWindowSnapshot($"{idPrefix}-{slotName}-{windows.Count}", label, window, limitReached, allowed));
+        }
+
+        TryAddWindow("primary", limitInfo.Primary_Window ?? limitInfo.PrimaryWindow);
+        TryAddWindow("secondary", limitInfo.Secondary_Window ?? limitInfo.SecondaryWindow);
+        foreach (var window in limitInfo.Windows ?? [])
+        {
+            TryAddWindow("list", window);
+        }
+
+        return windows;
+    }
+
+    /// <summary>
     /// 从 Codex usage 响应体解析额度快照
     /// </summary>
     public static CodexQuotaSnapshot ParseQuotaSnapshot(
@@ -216,32 +313,18 @@ public static class CodexQuotaParser
         // 套餐类型
         snapshot.PlanType = NormalizePlanType(payload.Plan_Type ?? payload.PlanType);
 
-        // 主额度窗口
+        // 主额度窗口：只要是有效窗口都收进快照，标签按窗口时长动态生成。
         var rateLimit = payload.Rate_Limit ?? payload.RateLimit;
         if (rateLimit is not null)
         {
-            var classified = ClassifyWindows(rateLimit);
-            var limitReached = rateLimit.Limit_Reached ?? rateLimit.LimitReached;
-            var allowed = rateLimit.Allowed;
-
-            if (classified.fiveHour is not null)
-                snapshot.Windows.Add(BuildWindowSnapshot("five-hour", "5 小时限额", classified.fiveHour, limitReached, allowed));
-            if (classified.weekly is not null)
-                snapshot.Windows.Add(BuildWindowSnapshot("weekly", "周限额", classified.weekly, limitReached, allowed));
+            snapshot.Windows.AddRange(BuildAllWindowSnapshots("rate-limit", string.Empty, rateLimit));
         }
 
         // 代码审查额度
         var codeReviewLimit = payload.Code_Review_Rate_Limit ?? payload.CodeReviewRateLimit;
         if (codeReviewLimit is not null)
         {
-            var classified = ClassifyWindows(codeReviewLimit);
-            var limitReached = codeReviewLimit.Limit_Reached ?? codeReviewLimit.LimitReached;
-            var allowed = codeReviewLimit.Allowed;
-
-            if (classified.fiveHour is not null)
-                snapshot.Windows.Add(BuildWindowSnapshot("code-review-five-hour", "代码审查 5 小时限额", classified.fiveHour, limitReached, allowed));
-            if (classified.weekly is not null)
-                snapshot.Windows.Add(BuildWindowSnapshot("code-review-weekly", "代码审查周限额", classified.weekly, limitReached, allowed));
+            snapshot.Windows.AddRange(BuildAllWindowSnapshots("code-review", "代码审查", codeReviewLimit));
         }
 
         // 额外限额
@@ -258,14 +341,7 @@ public static class CodexQuotaParser
                                 ?? item?.Metered_Feature ?? item?.MeteredFeature
                                 ?? $"additional-{i + 1}";
 
-                var classified = ClassifyWindows(rateInfo);
-                var limitReached = rateInfo.Limit_Reached ?? rateInfo.LimitReached;
-                var allowed = rateInfo.Allowed;
-
-                if (classified.fiveHour is not null)
-                    snapshot.Windows.Add(BuildWindowSnapshot($"additional-five-hour-{i}", $"{limitName} 5 小时限额", classified.fiveHour, limitReached, allowed));
-                if (classified.weekly is not null)
-                    snapshot.Windows.Add(BuildWindowSnapshot($"additional-weekly-{i}", $"{limitName} 周限额", classified.weekly, limitReached, allowed));
+                snapshot.Windows.AddRange(BuildAllWindowSnapshots($"additional-{i}", limitName, rateInfo));
             }
         }
 

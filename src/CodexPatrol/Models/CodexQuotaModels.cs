@@ -92,6 +92,12 @@ public sealed class CodexRateLimitInfo
     /// 次额度窗口（camelCase 格式）。
     /// </summary>
     public CodexUsageWindow? SecondaryWindow { get; set; }
+
+    /// <summary>
+    /// 直接返回的额度窗口列表（snake_case 格式）。
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("windows")]
+    public List<CodexUsageWindow>? Windows { get; set; }
 }
 
 /// <summary>

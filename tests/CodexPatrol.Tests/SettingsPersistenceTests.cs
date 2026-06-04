@@ -1547,6 +1547,54 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public async Task TryRefreshScheduledRealQuotasAsync_ShouldProtectFreeSingleFiveHourWindowFromLongResetTime()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var account = BuildAccount("free-5h", "free5h@test.com", disabled: true);
+            store.SetAccounts([account], "default");
+
+            var quota = new CodexQuotaSnapshot
+            {
+                AccountName = "free-5h",
+                DisplayAccount = "free5h@test.com",
+                PlanType = "Free",
+                Disabled = true,
+                CheckedAt = DateTime.UtcNow,
+                RefreshedAt = DateTime.UtcNow,
+                Success = true,
+                StatusCode = 200,
+                Windows =
+                [
+                    new CodexQuotaWindowSnapshot
+                    {
+                        Id = "five-hour",
+                        Label = "5 小时限额",
+                        UsedPercent = 100,
+                        LimitWindowSeconds = 18000,
+                        ResetAtUtc = DateTime.UtcNow.AddDays(30),
+                    }
+                ]
+            };
+
+            var method = typeof(AutoPollingService).GetMethod("ResolveUpcomingResetCheckAt", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            var rawResult = method!.Invoke(null, [quota, 95, DateTime.UtcNow]);
+            Assert.NotNull(rawResult);
+            var result = (DateTime?)rawResult;
+
+            Assert.True(result.HasValue);
+            Assert.True(result.Value <= DateTime.UtcNow.AddHours(5).AddMinutes(2));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
     public async Task TryRefreshScheduledRealQuotasAsync_ShouldSkipExceptionAccounts()
     {
         var baseDirectory = CreateTempDirectory();
@@ -2189,6 +2237,121 @@ public sealed class SettingsPersistenceTests
             Assert.Equal(DisableReason.None, store.GetDisableReason("pro-1", "default"));
             // free-1 仍然超阈值
             Assert.Equal(DisableReason.QuotaExhausted, store.GetDisableReason("free-1", "default"));
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task InspectAccountAsync_ShouldParseThirtyDayPrimaryWindowAsDynamicWindow()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var account = BuildAccount("account-thirty-day", "month@test.com");
+            store.SetAccounts([account], "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "allowed": true,
+                            "limit_reached": false,
+                            "primary_window": {
+                              "used_percent": 5,
+                              "limit_window_seconds": 2592000,
+                              "reset_after_seconds": 2592000,
+                              "reset_at": 1782969996
+                            },
+                            "secondary_window": null
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null, forceRefresh: true);
+            var quota = store.GetQuota("account-thirty-day", "default");
+
+            Assert.NotNull(quota);
+            Assert.Single(quota!.Windows);
+            Assert.Equal("月限额", quota.Windows[0].Label);
+            Assert.Equal(2592000, quota.Windows[0].LimitWindowSeconds);
+            Assert.Equal(InspectionAction.Keep, decision.Action);
+        }
+        finally
+        {
+            DeleteDirectory(baseDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task InspectAccountAsync_ShouldParseDirectWindowsList_WhenPrimarySecondaryMissing()
+    {
+        var baseDirectory = CreateTempDirectory();
+        try
+        {
+            var store = CreateStore(baseDirectory, BuildLegacyDefaults());
+            var account = BuildAccount("account-direct-window", "direct@test.com");
+            store.SetAccounts([account], "default");
+
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == "/v0/management/api-call")
+                {
+                    return JsonResponse(new ApiCallResponse
+                    {
+                        Status_Code = 200,
+                        BodyText = """
+                        {
+                          "plan_type": "free",
+                          "rate_limit": {
+                            "allowed": true,
+                            "limit_reached": false,
+                            "windows": [
+                              {
+                                "used_percent": 55,
+                                "limit_window_seconds": 18000,
+                                "reset_after_seconds": 7200
+                              }
+                            ]
+                          }
+                        }
+                        """
+                    });
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("not found", Encoding.UTF8, "text/plain")
+                };
+            });
+            var engine = new InspectionEngine(new CpaClient(new HttpClient(handler)), store);
+
+            var decision = await engine.InspectAccountAsync("default", account, lastUsageByAuthIndex: null, forceRefresh: true);
+            var quota = store.GetQuota("account-direct-window", "default");
+
+            Assert.NotNull(quota);
+            Assert.Single(quota!.Windows);
+            Assert.Equal(InspectionAction.Keep, decision.Action);
+            Assert.Equal(55, quota.Windows[0].UsedPercent);
         }
         finally
         {

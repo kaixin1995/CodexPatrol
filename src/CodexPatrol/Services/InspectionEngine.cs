@@ -299,6 +299,19 @@ public sealed class InspectionEngine
             file.Disabled,
             statusCode,
             body);
+        if (quota.Success && quota.Windows.Count == 0)
+        {
+            var bodyPreview = body.Length > 500 ? body[..500] + "..." : body;
+            _store.AddOperationLog(
+                "quota",
+                "quotaRefresh",
+                "engine",
+                $"真实额度响应解析后无窗口数据：{file.Name}，planType={quota.PlanType ?? "-"}，原始响应片段：{bodyPreview}",
+                "warning",
+                file.Name,
+                displayAccount,
+                resolvedSiteId);
+        }
         quota.FromCache = false;
         quota.CacheReason = "";
         quota.LastUsageAt = DateTime.MinValue;
