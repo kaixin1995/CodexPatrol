@@ -23,3 +23,5 @@ quota-cache.json
 *.dll
 *.pdb
 *.cache
+/.markdownlint.json
+/.tmp-markdownlint.json
