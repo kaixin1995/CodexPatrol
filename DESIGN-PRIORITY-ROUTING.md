@@ -17,7 +17,7 @@
   - [RuntimeStore](#runtimestore)
   - [InspectionEngine](#inspectionengine)
   - [AutoPollingService](#autopollingservice)
-  - [WarmupStartupQuotasAsync](#warmupstartupquotasasync)
+  - [WarmupStartupQuotasAsync](#warmupstartupquotasasync-改动)
 - [API 改造](#api-改造)
 - [前端改造](#前端改造)
 - [操作日志增强](#操作日志增强)
@@ -30,10 +30,12 @@
 ## 需求背景
 
 当前 CodexPatrol 的自动巡检功能只关注"额度安全"：
+
 - 额度达到阈值 → 自动禁用
 - 额度恢复 → 自动启用
 
 实际使用场景中，同一站点下有免费号和不同等级的收费号，用户需要按优先级顺序消费：
+
 1. 先用指定的免费号
 2. 免费号耗尽后，再用指定的收费号
 3. 收费号之间也有等级先后
@@ -46,34 +48,34 @@
 
 新增**账号优先级路由**功能（下称"优先级路由"），核心语义：
 
-| 概念 | 说明 |
+|概念|说明|
 |---|---|
-| 优先级 | 每个账号可设置一个数值，越小越优先（1 最先，2 其次，以此类推） |
-| 禁用原因 | 每个被禁用的账号需要区分"为什么禁用"，避免巡检误操作 |
-| 恢复条件 | 优先级路由开启时，账号恢复启用 = 额度已恢复 **且** 优先级轮到了 |
-| 最少保持启用数 | 优先级路由开启时，**至少保持 2 个优先级账号处于启用状态**，防止当前账号额度在两次巡检之间耗尽后 CPA 请求失败 |
+|优先级|每个账号可设置一个数值，越小越优先（1 最先，2 其次，以此类推）|
+|禁用原因|每个被禁用的账号需要区分"为什么禁用"，避免巡检误操作|
+|恢复条件|优先级路由开启时，账号恢复启用 = 额度已恢复 **且** 优先级轮到了|
+|最少保持启用数|优先级路由开启时，**至少保持 2 个优先级账号处于启用状态**，防止当前账号额度在两次巡检之间耗尽后 CPA 请求失败|
 
 **优先级路由与巡检的职责划分：**
 
-| 职责 | 负责模块 | 说明 |
+|职责|负责模块|说明|
 |---|---|---|
-| 探测额度状态 | 巡检 | 仍然负责真实请求、解析额度、判断是否超阈值 |
-| 超阈值时禁用 | 巡检 | 不变 |
-| 恢复时是否启用 | 优先级路由（开启时） | 不再无条件启用，需满足"额度恢复 + 优先级到了" |
-| 当前应启用哪些账号 | 优先级路由（开启时） | 按优先级从高到低，在手动巡检或自动巡检完成后决定应启用账号，并跳过例外账号 |
+|探测额度状态|巡检|仍然负责真实请求、解析额度、判断是否超阈值|
+|超阈值时禁用|巡检|不变|
+|恢复时是否启用|优先级路由（开启时）|不再无条件启用，需满足"额度恢复 + 优先级到了"|
+|当前应启用哪些账号|优先级路由（开启时）|按优先级从高到低，在手动巡检或自动巡检完成后决定应启用账号，并跳过例外账号|
 
 ---
 
 ## 当前实现补充（与额度巡检联动）
 
-| 主题 | 当前实现 |
+|主题|当前实现|
 |---|---|
-| 收费号额度规则 | 周额度或 5 小时额度任一达到阈值即禁用；恢复后再按优先级是否轮到决定启用 |
-| 免费号额度规则 | 仅按周额度处理，5 小时额度不作为禁用依据 |
-| 例外账号 | 不参与巡检候选、不参与优先级路由调度、不参与 10 小时保鲜真实刷新 |
-| 时间字段 | `CheckedAt` = 最近检查时间；`RefreshedAt` = 最近真实刷新时间 |
-| 真实刷新保鲜 | 非例外账号最长 10 小时一次真实请求，并分散到 8 小时 ~ 9 小时 50 分窗口 |
-| 保存后同步 CPA | 保存优先级配置后会立即增量同步 CPA `priority`，只改顺序不改 `disabled`；失败只告警，不回滚本地配置 |
+|收费号额度规则|周额度或 5 小时额度任一达到阈值即禁用；恢复后再按优先级是否轮到决定启用|
+|免费号额度规则|仅按周额度处理，5 小时额度不作为禁用依据|
+|例外账号|不参与巡检候选、不参与优先级路由调度、不参与 10 小时保鲜真实刷新|
+|时间字段|`CheckedAt` = 最近检查时间；`RefreshedAt` = 最近真实刷新时间|
+|真实刷新保鲜|非例外账号最长 10 小时一次真实请求，并分散到 8 小时 ~ 9 小时 50 分窗口|
+|保存后同步 CPA|保存优先级配置后会立即增量同步 CPA `priority`，只改顺序不改 `disabled`；失败只告警，不回滚本地配置|
 
 ---
 
@@ -81,19 +83,19 @@
 
 ### 两个独立开关
 
-| 开关 | 字段名 | 控制范围 |
+|开关|字段名|控制范围|
 |---|---|---|
-| 自动巡检 | `AutoPollingEnabled`（已有） | 是否自动按间隔巡检、是否自动执行禁用/删除动作 |
-| 优先级路由 | `PriorityRoutingEnabled`（**新增**） | 是否按优先级顺序调度账号启用/禁用 |
+|自动巡检|`AutoPollingEnabled`（已有）|是否自动按间隔巡检、是否自动执行禁用/删除动作|
+|优先级路由|`PriorityRoutingEnabled`（**新增**）|是否按优先级顺序调度账号启用/禁用|
 
 ### 四种组合行为
 
-| 优先级路由 | 自动巡检 | 行为 |
+|优先级路由|自动巡检|行为|
 |---|---|---|
-| ✗ | ✗ | 纯手动：用户自己管控一切 |
-| ✗ | ✓ | **现有行为，完全不变**：超阈值自动禁用，恢复自动启用，无顺序控制 |
-| ✓ | ✗ | 可配置优先级，但没有后台自动调度；需手动触发一次巡检后才会执行优先级调度 |
-| ✓ | ✓ | **完整模式**：自动探测额度 + 按优先级调度，恢复需额度和优先级同时满足 |
+|✗|✗|纯手动：用户自己管控一切|
+|✗|✓|**现有行为，完全不变**：超阈值自动禁用，恢复自动启用，无顺序控制|
+|✓|✗|可配置优先级，但没有后台自动调度；需手动触发一次巡检后才会执行优先级调度|
+|✓|✓|**完整模式**：自动探测额度 + 按优先级调度，恢复需额度和优先级同时满足|
 
 ### 关键约束
 
@@ -212,6 +214,7 @@ public ConcurrentDictionary<string, DisableReason> DisableReasons { get; } = new
 ```
 
 > 为什么不持久化 `DisableReason`？
+>
 > - `QuotaExhausted`：可从额度快照推断（周额度超阈值）
 > - `OrderedStandby`：可从优先级配置 + 当前激活状态推断
 > - `ManualDisabled`：启动时从 CPA 同步的 `disabled=true` 即可知，标记为手动
@@ -344,6 +347,7 @@ public sealed class PriorityRoutingStatusResponse
 ### `patrol-config.json`
 
 当前格式：
+
 ```json
 {
   "sites": [
@@ -357,6 +361,7 @@ public sealed class PriorityRoutingStatusResponse
 ```
 
 改造后：
+
 ```json
 {
   "sites": [
@@ -375,6 +380,7 @@ public sealed class PriorityRoutingStatusResponse
 ```
 
 **兼容性**：
+
 - `accountPriorities` 缺失时默认为空数组，等同于所有账号优先级为 0
 - `priorityRoutingEnabled` 缺失时默认为 `false`
 - `priorityMinActiveCount` 缺失时默认为 `2`
@@ -392,23 +398,25 @@ public sealed class PriorityRoutingStatusResponse
 
 #### 新增方法
 
-| 方法 | 说明 |
+|方法|说明|
 |---|---|
-| `List<AccountPriority> GetAccountPriorities(string? siteId)` | 获取优先级配置列表 |
-| `void SetAccountPriorities(List<AccountPriority> priorities, string? siteId)` | 设置优先级配置并持久化 |
-| `DisableReason GetDisableReason(string accountName, string? siteId)` | 获取账号禁用原因 |
-| `void SetDisableReason(string accountName, DisableReason reason, string? siteId)` | 设置账号禁用原因 |
-| `void ClearDisableReason(string accountName, string? siteId)` | 清除账号禁用原因 |
-| `string? GetActivePriorityAccount(string? siteId)` | 获取当前应激活的优先级最高且额度可用的账号名 |
+|`List<AccountPriority> GetAccountPriorities(string? siteId)`|获取优先级配置列表|
+|`void SetAccountPriorities(List<AccountPriority> priorities, string? siteId)`|设置优先级配置并持久化|
+|`DisableReason GetDisableReason(string accountName, string? siteId)`|获取账号禁用原因|
+|`void SetDisableReason(string accountName, DisableReason reason, string? siteId)`|设置账号禁用原因|
+|`void ClearDisableReason(string accountName, string? siteId)`|清除账号禁用原因|
+|`string? GetActivePriorityAccount(string? siteId)`|获取当前应激活的优先级最高且额度可用的账号名|
 
 #### `UpdateAccountDisabledState` 改动
 
 当前签名：
+
 ```csharp
 public bool UpdateAccountDisabledState(string accountName, bool disabled, string? siteId = null)
 ```
 
 新增重载：
+
 ```csharp
 public bool UpdateAccountDisabledState(string accountName, bool disabled, DisableReason reason, string? siteId = null)
 ```
@@ -422,7 +430,8 @@ public bool UpdateAccountDisabledState(string accountName, bool disabled, Disabl
 > 注意：返回的是**列表**而非单个账号，因为需要至少保持 `minActiveCount` 个可用账号。
 
 伪代码：
-```
+
+```text
 1. 如果 PriorityRoutingEnabled = false，返回空列表（不走优先级逻辑）
 2. 获取优先级配置，按 priority 升序排列
 3. 获取 minActiveCount = settings.PriorityMinActiveCount（至少 1，默认 2）
@@ -435,7 +444,8 @@ public bool UpdateAccountDisabledState(string accountName, bool disabled, Disabl
 ```
 
 示例（minActiveCount = 2）：
-```
+
+```text
 P1 = free-1  (周额度 60%)  → 激活
 P2 = free-2  (周额度 30%)  → 激活（达到 2 个，停止）
 P3 = pro-1   (周额度 10%)  → 不激活，保持待命
@@ -445,7 +455,8 @@ P4 = pro-2   (周额度 80%)  → 不激活，保持待命
 ```
 
 耗尽场景（minActiveCount = 2）：
-```
+
+```text
 P1 = free-1  (周额度 100%) → 跳过
 P2 = free-2  (周额度 98%)  → 跳过
 P3 = pro-1   (周额度 20%)  → 激活
@@ -457,6 +468,7 @@ P4 = pro-2   (周额度 15%)  → 激活（达到 2 个，停止）
 #### 初始化账号时标记禁用原因
 
 `SetAccounts` 方法中，当从 CPA 同步账号列表时，需要根据账号的 `Disabled` 状态初始化 `DisableReasons`：
+
 - 如果 `disabled = true` 且无已知禁用原因 → 标记为 `ManualDisabled`
 - 如果 `disabled = false` → 确保清除原因
 
@@ -468,7 +480,7 @@ P4 = pro-2   (周额度 15%)  → 激活（达到 2 个，停止）
 
 当前逻辑（`InspectionEngine.cs:577-663`）：
 
-```
+```text
 如果 weeklyPercent 未超阈值 且 file.Disabled → 建议启用
 ```
 
@@ -533,6 +545,7 @@ private InspectionDecision ResolveDecision(
 需要把 `priorityRoutingEnabled` 和优先级数据传入，以便传给 `ResolveDecision`。
 
 当前签名：
+
 ```csharp
 public async Task<List<InspectionDecision>> InspectAccountsAsync(
     string? siteId, List<AuthFileItem> files, ...)
@@ -543,6 +556,7 @@ public async Task<List<InspectionDecision>> InspectAccountsAsync(
 #### `FilterAutoActionItems` 改动
 
 当前签名：
+
 ```csharp
 public static List<InspectionDecision> FilterAutoActionItems(
     AutoActionMode mode, bool autoEnable, List<InspectionDecision> decisions)
@@ -551,6 +565,7 @@ public static List<InspectionDecision> FilterAutoActionItems(
 优先级路由开启时，`Enable` 类型的决策**不在此处处理**，而是由优先级调度逻辑统一接管。
 
 改造后逻辑：
+
 ```csharp
 public static List<InspectionDecision> FilterAutoActionItems(
     AutoActionMode mode, bool autoEnable, bool priorityRoutingEnabled,
@@ -684,6 +699,7 @@ _store.SetAccounts(files, siteId);
 当前行为：额度恢复后如果 `AutoEnableRecovered = true`，直接启用恢复账号。
 
 改造后：
+
 - 优先级路由**关闭** → 保持现有行为
 - 优先级路由**开启** → 不直接启用，而是交给 `ApplyPriorityRoutingAsync` 在下一轮巡检中统一处理
 
@@ -722,6 +738,7 @@ var actionItems = InspectionEngine.FilterAutoActionItems(mode, settings.AutoEnab
 当前行为：启动预热只探测前 3 个启用账号。
 
 改造后：
+
 - 优先级路由**关闭** → 保持现有行为（取前 3 个启用账号）
 - 优先级路由**开启** → 按优先级顺序取前 3 个账号（不论是否启用，因为优先级路由可能需要知道已禁用账号的额度恢复情况）
 
@@ -769,12 +786,13 @@ private async Task WarmupStartupQuotasAsync(
 
 ### 2. 新增优先级路由 API
 
-| 方法 | 路径 | 说明 |
+|方法|路径|说明|
 |---|---|---|
-| `GET` | `/api/settings/priority-routing` | 获取优先级路由状态和配置 |
-| `PUT` | `/api/settings/priority-routing` | 更新优先级路由配置（开关 + 优先级列表） |
+|`GET`|`/api/settings/priority-routing`|获取优先级路由状态和配置|
+|`PUT`|`/api/settings/priority-routing`|更新优先级路由配置（开关 + 优先级列表）|
 
 `PUT /api/settings/priority-routing` 请求体：
+
 ```json
 {
   "priorityRoutingEnabled": true,
@@ -813,6 +831,7 @@ private async Task WarmupStartupQuotasAsync(
 当前 `AuthFileItem` 已有 `disabled` 字段。需要在返回的额度快照 `CodexQuotaSnapshot` 中附带 `disableReason`。
 
 `CodexQuotaSnapshot` 新增字段：
+
 ```csharp
 /// <summary>
 /// 禁用原因，仅优先级路由开启时有效。
@@ -831,13 +850,14 @@ public string DisableReason { get; set; } = "";
 
 在"策略"选项卡中，`autoEnableRecovered` 开关下方新增：
 
-```
+```text
 ☑ 启用优先级路由
 最少保持启用数：[  2  ]（1-10，默认 2，防止当前账号在两次巡检之间耗尽后 CPA 请求失败）
 提示：开启后账号按优先级顺序消费，至少保持指定数量的可用账号同时启用
 ```
 
 交互约束：
+
 - 开启 `priorityRoutingEnabled` 时，自动提示建议同时开启 `autoPollingEnabled`，但不强制
 - `priorityRoutingEnabled = false` 时，隐藏优先级配置区域
 
@@ -861,6 +881,7 @@ public string DisableReason { get; set; } = "";
 ### 4. 账号操作交互变化
 
 优先级路由开启时：
+
 - 手动禁用账号 → 禁用原因标记为 `ManualDisabled`
 - 手动启用已禁用账号 → 提示"优先级路由模式下，手动启用的账号可能在下一轮巡检中被重新调整为待命状态"
 
@@ -870,17 +891,17 @@ public string DisableReason { get; set; } = "";
 
 优先级路由相关操作需生成日志：
 
-| 场景 | 日志 category | 日志 operationType | 示例消息 |
+|场景|日志 category|日志 operationType|示例消息|
 |---|---|---|---|
-| 优先级路由恢复启用 | account | priorityRouting | `优先级路由恢复启用：free-1（优先级 1）` |
-| 优先级路由待命禁用 | account | priorityRouting | `优先级路由待命禁用：free-2（优先级 2）` |
-| 所有账号耗尽 | account | priorityRouting | `优先级路由：所有配置优先级的账号额度已耗尽` |
-| 可用账号不足最少保持数 | account | priorityRouting | `优先级路由：仅剩 N 个可用账号，不足最少保持数 M` |
-| 额度恢复但未轮到 | inspection | inspection | `额度恢复但优先级路由开启，等待优先级调度：pro-1（优先级 3）` |
-| 优先级路由配置更新 | system | settings | `优先级路由配置已更新，共 N 个账号` |
-| CPA 优先级同步成功 | system | priorityRouting | `优先级路由配置已保存，并已同步 CPA 优先级，共更新 N 个账号` |
-| CPA 优先级同步告警 | system | priorityRouting | `本地配置已保存，但同步 CPA 优先级失败：...` |
-| 启动预热按优先级 | quota | startupWarmup | `启动预热按优先级顺序开始，将对最多 3 个账号做真实额度检测` |
+|优先级路由恢复启用|account|priorityRouting|`优先级路由恢复启用：free-1（优先级 1）`|
+|优先级路由待命禁用|account|priorityRouting|`优先级路由待命禁用：free-2（优先级 2）`|
+|所有账号耗尽|account|priorityRouting|`优先级路由：所有配置优先级的账号额度已耗尽`|
+|可用账号不足最少保持数|account|priorityRouting|`优先级路由：仅剩 N 个可用账号，不足最少保持数 M`|
+|额度恢复但未轮到|inspection|inspection|`额度恢复但优先级路由开启，等待优先级调度：pro-1（优先级 3）`|
+|优先级路由配置更新|system|settings|`优先级路由配置已更新，共 N 个账号`|
+|CPA 优先级同步成功|system|priorityRouting|`优先级路由配置已保存，并已同步 CPA 优先级，共更新 N 个账号`|
+|CPA 优先级同步告警|system|priorityRouting|`本地配置已保存，但同步 CPA 优先级失败：...`|
+|启动预热按优先级|quota|startupWarmup|`启动预热按优先级顺序开始，将对最多 3 个账号做真实额度检测`|
 
 ---
 
@@ -888,43 +909,43 @@ public string DisableReason { get; set; } = "";
 
 ### 必须通过的回归测试（优先级路由关闭）
 
-| 场景 | 预期 |
+|场景|预期|
 |---|---|
-| `PriorityRoutingEnabled = false` 时，自动巡检禁用超阈值账号 | 行为与改造前完全一致 |
-| `PriorityRoutingEnabled = false` 时，恢复的账号被自动启用 | 行为与改造前完全一致 |
-| `PriorityRoutingEnabled = false` 时，手动禁用/启用账号 | 行为与改造前完全一致 |
-| `PriorityRoutingEnabled = false` 时，启动预热 | 只探测前 3 个启用账号，与改造前一致 |
-| `PriorityRoutingEnabled = false` 时，额度重置检测 | 行为与改造前完全一致 |
-| 旧配置文件（无 `priorityRoutingEnabled` / `accountPriorities` 字段）加载 | 默认值为 `false`/空列表，不报错 |
+|`PriorityRoutingEnabled = false` 时，自动巡检禁用超阈值账号|行为与改造前完全一致|
+|`PriorityRoutingEnabled = false` 时，恢复的账号被自动启用|行为与改造前完全一致|
+|`PriorityRoutingEnabled = false` 时，手动禁用/启用账号|行为与改造前完全一致|
+|`PriorityRoutingEnabled = false` 时，启动预热|只探测前 3 个启用账号，与改造前一致|
+|`PriorityRoutingEnabled = false` 时，额度重置检测|行为与改造前完全一致|
+|旧配置文件（无 `priorityRoutingEnabled` / `accountPriorities` 字段）加载|默认值为 `false`/空列表，不报错|
 
 ### 优先级路由专项测试
 
-| 场景 | 预期 |
+|场景|预期|
 |---|---|
-| 开启优先级路由，配置 P1→A1, P2→A2, P3→A3（均额度可用，minActiveCount=2） | A1 和 A2 启用，A3 被禁用标记 OrderedStandby |
-| A1 额度超阈值后（minActiveCount=2） | A1 禁用标记 QuotaExhausted，A2 仍启用，A3 被启用（补足 2 个） |
-| A1 和 A2 都超阈值后（minActiveCount=2） | A3 启用（仅剩 1 个可用，不足 2 个但全部启用），日志标记仅剩 1 个 |
-| 3 个都超阈值后 | 全部禁用，日志记录"所有优先级账号耗尽" |
-| A1 额度恢复（minActiveCount=2） | A1 重新启用，A3 被禁用回到待命（保持 A1+A2 共 2 个） |
-| 收费号周额度可用但 5 小时额度达阈值 | 不进入 active 集合，不会被优先级路由恢复启用 |
-| 手动禁用的账号额度恢复 | 只要不在例外名单且进入 active，优先级路由会统一恢复启用 |
-| minActiveCount=1 时 | 只启用最高优先级的 1 个可用账号 |
-| 有账号无优先级配置 | 这些账号不受优先级路由影响 |
-| 待首检账号存在，但尚未完成首检 | 不参与 active 选择，也不参与 CPA 优先级同步 |
-| 例外账号仍保留在优先级列表 | 不参与优先级调度，不会被自动启用/禁用，也不参与 CPA 同步 |
-| 优先级路由开启 + 自动巡检关闭 | 优先级路由可以手动触发巡检后执行调度 |
-| 优先级路由关闭时完成巡检 | 不自动重排本地顺序，也不自动同步 CPA 优先级 |
-| 账号不存在于优先级列表 | 不参与优先级调度，但不被禁用 |
+|开启优先级路由，配置 P1→A1, P2→A2, P3→A3（均额度可用，minActiveCount=2）|A1 和 A2 启用，A3 被禁用标记 OrderedStandby|
+|A1 额度超阈值后（minActiveCount=2）|A1 禁用标记 QuotaExhausted，A2 仍启用，A3 被启用（补足 2 个）|
+|A1 和 A2 都超阈值后（minActiveCount=2）|A3 启用（仅剩 1 个可用，不足 2 个但全部启用），日志标记仅剩 1 个|
+|3 个都超阈值后|全部禁用，日志记录"所有优先级账号耗尽"|
+|A1 额度恢复（minActiveCount=2）|A1 重新启用，A3 被禁用回到待命（保持 A1+A2 共 2 个）|
+|收费号周额度可用但 5 小时额度达阈值|不进入 active 集合，不会被优先级路由恢复启用|
+|手动禁用的账号额度恢复|只要不在例外名单且进入 active，优先级路由会统一恢复启用|
+|minActiveCount=1 时|只启用最高优先级的 1 个可用账号|
+|有账号无优先级配置|这些账号不受优先级路由影响|
+|待首检账号存在，但尚未完成首检|不参与 active 选择，也不参与 CPA 优先级同步|
+|例外账号仍保留在优先级列表|不参与优先级调度，不会被自动启用/禁用，也不参与 CPA 同步|
+|优先级路由开启 + 自动巡检关闭|优先级路由可以手动触发巡检后执行调度|
+|优先级路由关闭时完成巡检|不自动重排本地顺序，也不自动同步 CPA 优先级|
+|账号不存在于优先级列表|不参与优先级调度，但不被禁用|
 
 ### 禁用原因测试
 
-| 场景 | 预期 DisableReason |
+|场景|预期 DisableReason|
 |---|---|
-| 额度超阈值自动禁用 | QuotaExhausted |
-| 优先级路由把非当前账号禁用 | OrderedStandby |
-| 用户在前端手动禁用 | ManualDisabled |
-| 探测异常（401 等）自动禁用 | ErrorDisabled |
-| 正常启用状态 | None |
+|额度超阈值自动禁用|QuotaExhausted|
+|优先级路由把非当前账号禁用|OrderedStandby|
+|用户在前端手动禁用|ManualDisabled|
+|探测异常（401 等）自动禁用|ErrorDisabled|
+|正常启用状态|None|
 
 ---
 
