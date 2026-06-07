@@ -24,6 +24,9 @@ let currentFilter = 'enabled';
 let cachedPriorityMap = {};
 let cachedPriorityRoutingEnabled = false;
 let cachedUsedPercentThreshold = 95;
+let pendingInvalidCleanupAccounts = [];
+
+const INVALID_TOKEN_MESSAGE = 'your authentication token has been invalidated. please try signing in again.';
 
 function renderPage() {
   renderLayout('quotas', '额度管理', `
@@ -33,6 +36,7 @@ function renderPage() {
         <button class="btn btn-primary" id="btn-refresh-all">刷新全部额度</button>
         <button class="btn" id="btn-refresh-all-force">真实请求</button>
         <button class="btn" id="btn-refresh-page">刷新本页</button>
+        <button class="btn btn-danger" id="btn-cleanup-invalid" style="display:none">清理无效账户</button>
       </div>
     </div>
     <div class="settings-tabs" id="quota-filter-tabs">
@@ -53,6 +57,20 @@ function renderPage() {
     <div class="quota-grid" id="quota-grid"></div>
     <div id="quota-empty" class="empty-state" style="display:none">
       <p>暂无额度数据，请先刷新额度或执行巡检</p>
+    </div>
+    <div id="invalid-cleanup-modal" class="modal" style="display:none">
+      <div class="modal-content" style="width:min(720px, calc(100vw - 32px))">
+        <h3>确认清理无效账户</h3>
+        <div class="auth-error">
+          只会删除当前站点中明确属于鉴权失效的错误账号：仅限 HTTP 401，或错误信息包含 “Your authentication token has been invalidated. Please try signing in again.”。删除前请务必核对下面列表，确认无误后再执行。
+        </div>
+        <div id="invalid-cleanup-summary" class="hint" style="margin-top:12px"></div>
+        <div id="invalid-cleanup-list" class="picker-list" style="margin-top:12px"></div>
+        <div class="modal-actions">
+          <button class="btn btn-danger" id="btn-confirm-cleanup-invalid">确认删除</button>
+          <button class="btn" id="btn-cancel-cleanup-invalid">取消</button>
+        </div>
+      </div>
     </div>
   `);
 }
@@ -242,6 +260,56 @@ function renderQuotaAvailabilitySummary() {
   `;
 }
 
+function buildInvalidCleanupReason(quota) {
+  if (!quota || quota.success) {
+    return '';
+  }
+
+  const message = String(quota.errorMessage || '').trim();
+  if (Number(quota.statusCode) === 401) {
+    return message ? `额度获取失败：401 ${message}` : '额度获取失败：401';
+  }
+
+  return message.toLowerCase().includes(INVALID_TOKEN_MESSAGE)
+    ? (Number(quota.statusCode) > 0 ? `额度获取失败：${quota.statusCode} ${message}` : `额度获取失败：${message}`)
+    : '';
+}
+
+function getInvalidCleanupCandidatesFromCurrentData() {
+  const quotaMap = Object.fromEntries((cachedQuotas || []).map(quota => [quota.accountName, quota]));
+  return getFilteredAccounts()
+    .map(account => {
+      const accountName = getAccountName(account);
+      const quota = quotaMap[accountName];
+      const reason = buildInvalidCleanupReason(quota);
+      return reason
+        ? {
+            accountName,
+            displayAccount: getDisplayAccount(account, quota),
+            reason,
+          }
+        : null;
+    })
+    .filter(Boolean);
+}
+
+function updateCleanupInvalidButton() {
+  const button = document.getElementById('btn-cleanup-invalid');
+  if (!button) {
+    return;
+  }
+
+  if (currentFilter !== 'error') {
+    button.style.display = 'none';
+    return;
+  }
+
+  const candidates = getInvalidCleanupCandidatesFromCurrentData();
+  button.style.display = 'inline-flex';
+  button.disabled = candidates.length === 0;
+  button.textContent = candidates.length > 0 ? `清理无效账户（${candidates.length}）` : '清理无效账户';
+}
+
 function getFilteredAccounts() {
   let accounts = cachedAccounts;
 
@@ -391,6 +459,7 @@ function renderQuotaGrid() {
     empty.style.display = 'block';
     empty.querySelector('p').textContent = '暂无账号数据，请检查 CPA 连接配置';
     renderQuotaPagination();
+    updateCleanupInvalidButton();
     return;
   }
 
@@ -400,6 +469,7 @@ function renderQuotaGrid() {
     empty.style.display = 'block';
     empty.querySelector('p').textContent = '当前筛选条件下没有匹配的账号';
     renderQuotaPagination();
+    updateCleanupInvalidButton();
     return;
   }
 
@@ -407,6 +477,7 @@ function renderQuotaGrid() {
   grid.innerHTML = getVisibleQuotaAccounts().map(account => renderAccountCard(account, quotaMap[getAccountName(account)])).join('');
   updateQuotaResetCountdowns();
   renderQuotaPagination();
+  updateCleanupInvalidButton();
 }
 
 function renderProgress(progress) {
@@ -437,6 +508,92 @@ function renderProgress(progress) {
       </div>
     </div>
   `;
+}
+
+function closeInvalidCleanupModal() {
+  pendingInvalidCleanupAccounts = [];
+  document.getElementById('invalid-cleanup-modal').style.display = 'none';
+}
+
+function renderInvalidCleanupModal(preview) {
+  const candidates = preview?.accounts || [];
+  pendingInvalidCleanupAccounts = candidates;
+
+  document.getElementById('invalid-cleanup-summary').innerHTML = candidates.length > 0
+    ? `本次将删除 <strong>${candidates.length}</strong> 个无效账号。请逐项核对账号和删除原因，确认没有误删后再继续。`
+    : '当前没有可安全清理的无效账号。';
+
+  document.getElementById('invalid-cleanup-list').innerHTML = candidates.length > 0
+    ? candidates.map(item => `
+        <div class="picker-item" style="align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;word-break:break-word">${escapeHtml(item.displayAccount || item.accountName || '-')}</div>
+            <div style="font-size:12px;color:#6b7280;word-break:break-all;margin-top:4px">${escapeHtml(item.accountName || '-')}</div>
+            <div style="font-size:12px;color:#dc2626;word-break:break-word;margin-top:6px">${escapeHtml(item.reason || '-')}</div>
+          </div>
+        </div>
+      `).join('')
+    : '<p class="hint">当前仅错误账号里没有满足清理条件的无效账号</p>';
+
+  document.getElementById('btn-confirm-cleanup-invalid').textContent = candidates.length > 0
+    ? `确认删除 ${candidates.length} 个账号`
+    : '确认删除';
+  document.getElementById('btn-confirm-cleanup-invalid').disabled = candidates.length === 0;
+  document.getElementById('invalid-cleanup-modal').style.display = 'flex';
+}
+
+async function openInvalidCleanupModal() {
+  try {
+    setLoading(true);
+    const preview = await api('/api/accounts/cleanup-invalid/preview');
+    if (!preview?.accounts?.length) {
+      showToast('当前仅错误账号里没有可清理的无效账户', 'warning');
+      return;
+    }
+
+    renderInvalidCleanupModal(preview);
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function confirmInvalidCleanup() {
+  if (pendingInvalidCleanupAccounts.length === 0) {
+    showToast('当前没有待清理的无效账号', 'warning');
+    return;
+  }
+
+  try {
+    setLoading(true);
+    const result = await api('/api/accounts/cleanup-invalid', {
+      method: 'POST',
+      body: JSON.stringify({
+        accountNames: pendingInvalidCleanupAccounts.map(item => item.accountName),
+      }),
+    });
+
+    closeInvalidCleanupModal();
+    await Promise.all([loadQuotasPage(), loadRuntimePanels()]);
+
+    const deletedCount = result?.deletedCount ?? 0;
+    const skippedCount = result?.skippedCount ?? 0;
+    if (deletedCount <= 0) {
+      showToast(`没有删除任何账号，已跳过 ${skippedCount} 个`, 'warning');
+      return;
+    }
+
+    showToast(
+      skippedCount > 0
+        ? `已删除 ${deletedCount} 个无效账号，跳过 ${skippedCount} 个`
+        : `已删除 ${deletedCount} 个无效账号`,
+      skippedCount > 0 ? 'warning' : 'success');
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function loadQuotasPage({ refreshAccountList = false } = {}) {
@@ -598,6 +755,14 @@ function bindEvents() {
   document.getElementById('btn-refresh-all').addEventListener('click', () => refreshAllQuotas(false));
   document.getElementById('btn-refresh-all-force').addEventListener('click', () => refreshAllQuotas(true));
   document.getElementById('btn-refresh-page').addEventListener('click', refreshCurrentPageQuotas);
+  document.getElementById('btn-cleanup-invalid').addEventListener('click', openInvalidCleanupModal);
+  document.getElementById('btn-confirm-cleanup-invalid').addEventListener('click', confirmInvalidCleanup);
+  document.getElementById('btn-cancel-cleanup-invalid').addEventListener('click', closeInvalidCleanupModal);
+  document.getElementById('invalid-cleanup-modal').addEventListener('click', event => {
+    if (event.target?.id === 'invalid-cleanup-modal') {
+      closeInvalidCleanupModal();
+    }
+  });
   document.getElementById('quota-filter-tabs').addEventListener('click', event => {
     const tab = event.target.closest('[data-filter]');
     if (!tab) return;

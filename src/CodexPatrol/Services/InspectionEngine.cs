@@ -19,6 +19,11 @@ public sealed class InspectionEngine
     private readonly RuntimeStore _store;
 
     /// <summary>
+    /// token 失效错误关键词，用于识别可自动禁用/清理的无效账号。
+    /// </summary>
+    private const string InvalidTokenMessage = "Your authentication token has been invalidated. Please try signing in again.";
+
+    /// <summary>
     /// 全局探测并发计数。
     /// </summary>
     private int _globalProbeRunningCount;
@@ -535,7 +540,14 @@ public sealed class InspectionEngine
 
                 case InspectionAction.Disable:
                     await _cpa.DisableAccountAsync(settings, decision.AccountName, ct);
-                    _store.UpdateAccountDisabledState(decision.AccountName, disabled: true, siteId);
+                    if (decision.DisableReason != DisableReason.None)
+                    {
+                        _store.UpdateAccountDisabledState(decision.AccountName, disabled: true, decision.DisableReason, siteId);
+                    }
+                    else
+                    {
+                        _store.UpdateAccountDisabledState(decision.AccountName, disabled: true, siteId);
+                    }
                     return new ActionOutcome
                     {
                         Action = "disable",
@@ -598,6 +610,21 @@ public sealed class InspectionEngine
         var joinedWindowLabels = effectiveWindowLabels.Count > 0 ? string.Join("、", effectiveWindowLabels) : "额度窗口";
         var isQuotaReached = CodexQuotaParser.IsQuotaReached(quota);
         var priorityRoutingEnabled = siteId != null && _store.GetSettings(siteId).PriorityRoutingEnabled;
+
+        // 对明确的鉴权失效错误单独处理：这类账号后续巡检也无法恢复，统一建议禁用并允许前端后续清理。
+        if (TryGetInvalidCredentialFailureReason(quota, out var invalidReason))
+        {
+            if (file.Disabled)
+            {
+                return BuildDecision(file, InspectionAction.Keep,
+                    $"{invalidReason}，但账号已禁用", statusCode, null, false,
+                    DisableReason.ErrorDisabled);
+            }
+
+            return BuildDecision(file, InspectionAction.Disable,
+                $"{invalidReason}，建议禁用账号", statusCode, null, false,
+                DisableReason.ErrorDisabled);
+        }
 
         // 有动态额度窗口数据时，按实际返回窗口判断禁用/启用。
         if (effectiveWindows.Count > 0)
@@ -702,10 +729,27 @@ public sealed class InspectionEngine
         List<InspectionDecision> decisions)
     {
         var result = new List<InspectionDecision>();
+        var includedAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddActionItems(IEnumerable<InspectionDecision> items)
+        {
+            foreach (var item in items)
+            {
+                if (includedAccounts.Add(item.AccountName))
+                {
+                    result.Add(item);
+                }
+            }
+        }
+
+        // 鉴权失效类错误必须随巡检自动禁用，不受自动动作模式影响。
+        AddActionItems(decisions.Where(decision =>
+            decision.Action == InspectionAction.Disable
+            && decision.DisableReason == DisableReason.ErrorDisabled));
 
         if (mode == AutoActionMode.Disable)
         {
-            result.AddRange(decisions
+            AddActionItems(decisions
                 .Where(decision => decision.Action is InspectionAction.Delete or InspectionAction.Disable)
                 .Select(decision =>
                 {
@@ -719,17 +763,49 @@ public sealed class InspectionEngine
         }
         else if (mode == AutoActionMode.Delete)
         {
-            result.AddRange(decisions
+            AddActionItems(decisions
                 .Where(decision => decision.Action is InspectionAction.Delete or InspectionAction.Disable));
         }
 
         // 优先级路由开启时，Enable 决策由优先级调度处理
         if (autoEnable && !priorityRoutingEnabled)
         {
-            result.AddRange(decisions.Where(decision => decision.Action == InspectionAction.Enable));
+            AddActionItems(decisions.Where(decision => decision.Action == InspectionAction.Enable));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 判断额度错误是否属于明确的鉴权失效。
+    /// 仅识别 401 或 token invalidated，避免把普通波动性错误误判为可清理账号。
+    /// </summary>
+    public static bool TryGetInvalidCredentialFailureReason(CodexQuotaSnapshot? quota, out string reason)
+    {
+        reason = string.Empty;
+        if (quota is null || quota.Success)
+        {
+            return false;
+        }
+
+        var message = (quota.ErrorMessage ?? string.Empty).Trim();
+        if (quota.StatusCode == 401)
+        {
+            reason = string.IsNullOrWhiteSpace(message)
+                ? "额度获取失败：401"
+                : $"额度获取失败：401 {message}";
+            return true;
+        }
+
+        if (message.IndexOf(InvalidTokenMessage, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            reason = quota.StatusCode > 0
+                ? $"额度获取失败：{quota.StatusCode} {message}"
+                : $"额度获取失败：{message}";
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>

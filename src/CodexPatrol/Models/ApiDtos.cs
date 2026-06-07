@@ -309,6 +309,91 @@ public sealed class RefreshResponse
 }
 
 /// <summary>
+/// 无效账号候选项。
+/// </summary>
+public sealed class InvalidAccountCandidateResponse
+{
+    /// <summary>
+    /// 账号文件名。
+    /// </summary>
+    [JsonPropertyName("accountName")]
+    public string AccountName { get; set; } = "";
+
+    /// <summary>
+    /// 页面展示账号名。
+    /// </summary>
+    [JsonPropertyName("displayAccount")]
+    public string DisplayAccount { get; set; } = "";
+
+    /// <summary>
+    /// 当前候选原因。
+    /// </summary>
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "";
+}
+
+/// <summary>
+/// 无效账号清理预览响应。
+/// </summary>
+public sealed class InvalidAccountCleanupPreviewResponse
+{
+    /// <summary>
+    /// 当前可安全清理的候选数量。
+    /// </summary>
+    [JsonPropertyName("totalCandidates")]
+    public int TotalCandidates { get; set; }
+
+    /// <summary>
+    /// 当前候选账号列表。
+    /// </summary>
+    [JsonPropertyName("accounts")]
+    public List<InvalidAccountCandidateResponse> Accounts { get; set; } = [];
+}
+
+/// <summary>
+/// 无效账号清理请求。
+/// </summary>
+public sealed class InvalidAccountCleanupRequest
+{
+    /// <summary>
+    /// 前端确认后提交的账号文件名列表。
+    /// 后端会再次校验，只删除仍然满足条件的账号。
+    /// </summary>
+    [JsonPropertyName("accountNames")]
+    public List<string> AccountNames { get; set; } = [];
+}
+
+/// <summary>
+/// 无效账号清理结果响应。
+/// </summary>
+public sealed class InvalidAccountCleanupResultResponse
+{
+    /// <summary>
+    /// 实际删除成功的账号数量。
+    /// </summary>
+    [JsonPropertyName("deletedCount")]
+    public int DeletedCount { get; set; }
+
+    /// <summary>
+    /// 被后端跳过的账号数量。
+    /// </summary>
+    [JsonPropertyName("skippedCount")]
+    public int SkippedCount { get; set; }
+
+    /// <summary>
+    /// 已删除账号列表。
+    /// </summary>
+    [JsonPropertyName("deletedAccounts")]
+    public List<InvalidAccountCandidateResponse> DeletedAccounts { get; set; } = [];
+
+    /// <summary>
+    /// 被跳过账号列表及原因。
+    /// </summary>
+    [JsonPropertyName("skippedAccounts")]
+    public List<InvalidAccountCandidateResponse> SkippedAccounts { get; set; } = [];
+}
+
+/// <summary>
 /// 自动轮询操作响应。
 /// </summary>
 public sealed class AutoPollingResponse
